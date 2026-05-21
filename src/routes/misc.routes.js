@@ -112,16 +112,64 @@ router.delete('/tag/:id', auth, adminOnly, async (req, res) => {
   res.json({ message: 'Tag deleted' });
 });
 
-// GET /currency
+// GET /currency — the storefront is restricted to COP (default) and USD only.
+// COP is the base currency: product prices in the DB are stored in COP, so its
+// exchange_rate is 1. USD's rate converts a COP value into USD.
+const SUPPORTED_CURRENCIES = [
+  {
+    id: 1,
+    name: 'Colombian Peso',
+    code: 'COP',
+    symbol: '$',
+    no_of_decimal: 0,
+    exchange_rate: 1,
+    symbol_position: 'before_price',
+    thousands_separator: 'dot',
+    decimal_separator: 'comma',
+    status: 1,
+    is_default: true,
+  },
+  {
+    id: 2,
+    name: 'US Dollar',
+    code: 'USD',
+    symbol: 'US$',
+    no_of_decimal: 2,
+    exchange_rate: 0.00024,
+    symbol_position: 'before_price',
+    thousands_separator: 'comma',
+    decimal_separator: 'dot',
+    status: 1,
+    is_default: false,
+  },
+];
+
 router.get('/currency', async (req, res) => {
   res.json({
-    data: [
-      { id: 1, name: 'US Dollar', code: 'USD', symbol: '$' },
-      { id: 2, name: 'Euro', code: 'EUR', symbol: '€' },
-      { id: 3, name: 'British Pound', code: 'GBP', symbol: '£' },
-    ],
+    current_page: 1,
+    last_page: 1,
+    total: SUPPORTED_CURRENCIES.length,
+    per_page: SUPPORTED_CURRENCIES.length,
+    data: SUPPORTED_CURRENCIES,
   });
 });
+
+// GET /currency/:id — single lookup (admin edit page hits this).
+router.get('/currency/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  const found = SUPPORTED_CURRENCIES.find((c) => c.id === id) ||
+                SUPPORTED_CURRENCIES.find((c) => c.code === req.params.id);
+  if (!found) return res.status(404).json({ message: 'Currency not found' });
+  res.json(found);
+});
+
+// POST /currency, PUT /currency/:id — explicitly locked. The storefront is
+// fixed to COP + USD by design.
+const lockedCurrencyHandler = (_req, res) =>
+  res.status(403).json({ message: 'Currency set is locked to COP and USD.' });
+router.post('/currency', lockedCurrencyHandler);
+router.put('/currency/:id', lockedCurrencyHandler);
+router.delete('/currency/:id', lockedCurrencyHandler);
 
 // Tax CRUD
 router.get('/tax', async (req, res) => {
@@ -340,11 +388,10 @@ router.post('/contact-us', ok);
 // GET /commissionHistory
 router.get('/commissionHistory', emptyList);
 
-// GET /paymentAccount
-router.get('/paymentAccount', emptyList);
-router.post('/paymentAccount', ok);
-router.put('/paymentAccount/:id', ok);
-router.delete('/paymentAccount/:id', ok);
+// /paymentAccount, /wallet/* and /download endpoints were removed when the
+// Bank Details, My Wallet, and Downloads features were retired from the
+// storefront. /points/consumer below is kept so the Earning Points feature
+// can be toggled back on via settings.activation.earning_points.
 
 // GET /withdrawRequest
 router.get('/withdrawRequest', emptyList);

@@ -41,7 +41,6 @@ app.use('/review', require('./src/routes/review.routes'));
 app.use('/wishlist', require('./src/routes/wishlist.routes'));
 app.use('/compare', require('./src/routes/compare.routes'));
 app.use('/address', require('./src/routes/address.routes'));
-app.use('/', require('./src/routes/wallet.routes'));
 app.use('/attachment', require('./src/routes/attachment.routes'));
 app.use('/notifications', require('./src/routes/notification.routes'));
 app.use('/homepage', require('./src/routes/homepage.routes'));
