@@ -27,8 +27,7 @@ router.post('/register', async (req, res) => {
   if (exists) return res.status(422).json({ message: 'Email already registered' });
   const consumerRole = await Role.findOne({ name: 'consumer' });
   const user = await User.create({ name, email, password, phone, country_code, role: consumerRole?._id });
-  const Wallet = require('../models/Wallet');
-  await Wallet.create({ consumer_id: user._id });
+  // (Wallet auto-creation removed when the consumer wallet feature was retired.)
   const populated = await User.findById(user._id).populate('role');
   const token = signToken(user._id);
   res.status(201).json({ token, access_token: token, data: populated });

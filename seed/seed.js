@@ -18,7 +18,6 @@ const Blog        = require('../src/models/Blog');
 const Review      = require('../src/models/Review');
 const Wishlist    = require('../src/models/Wishlist');
 const Cart        = require('../src/models/Cart');
-const Wallet      = require('../src/models/Wallet');
 const Setting     = require('../src/models/Setting');
 const Notification= require('../src/models/Notification');
 const Homepage    = require('../src/models/Homepage');
@@ -96,7 +95,7 @@ async function seed() {
     status: 1,
     email_verified_at: new Date(),
   });
-  await Wallet.create({ consumer_id: consumerUser._id, balance: 50000 });
+  // (Wallet creation removed when the consumer wallet feature was retired.)
   console.log(`Usuarios: ${adminUser.email} / ${consumerUser.email}`);
 
   // ── 4. Configuración ────────────────────────────────────────────────────────
