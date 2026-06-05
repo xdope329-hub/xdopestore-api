@@ -5,8 +5,27 @@ const methodOverride = require('method-override');
 
 const app = express();
 
+// Allowed CORS origins. In production set the CORS_ORIGINS env var to a
+// comma-separated list of frontend URLs, e.g.
+//   CORS_ORIGINS=https://your-store.vercel.app,https://your-admin.vercel.app
+// When the env var is unset (local dev), fall back to the localhost ports.
+const DEFAULT_DEV_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:3002',
+];
+const allowedOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+  : DEFAULT_DEV_ORIGINS;
+
 app.use(cors({
-  origin: ['http://localhost:3001', 'http://localhost:3002', 'http://localhost:3000'],
+  origin: (origin, callback) => {
+    // Non-browser requests (curl, mobile apps, server-to-server) send no
+    // Origin header — those are allowed through.
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+  },
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
