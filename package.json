@@ -3,6 +3,9 @@
   "version": "2.0.0",
   "description": "xdope-store Express.js + MongoDB backend",
   "main": "server.js",
+  "engines": {
+    "node": ">=20.0.0 <23.0.0"
+  },
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
@@ -12,10 +15,7 @@
   "jest": {
     "testEnvironment": "node",
     "testTimeout": 60000,
-    "testPathIgnorePatterns": [
-      "/node_modules/",
-      "/__tests__/_support/"
-    ]
+    "testPathIgnorePatterns": ["/node_modules/", "/__tests__/_support/"]
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
