@@ -5,26 +5,20 @@ const methodOverride = require('method-override');
 
 const app = express();
 
-// Allowed CORS origins. In production set the CORS_ORIGINS env var to a
-// comma-separated list of frontend URLs, e.g.
-//   CORS_ORIGINS=https://your-store.vercel.app,https://your-admin.vercel.app
-// When the env var is unset (local dev), fall back to the localhost ports.
-const DEFAULT_DEV_ORIGINS = [
+const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:3002',
+  'https://xdopestore-amwugmizc-xdope-s-projects.vercel.app',
 ];
-const allowedOrigins = process.env.CORS_ORIGINS
-  ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
-  : DEFAULT_DEV_ORIGINS;
+if (process.env.FRONTEND_URL) allowedOrigins.push(process.env.FRONTEND_URL);
 
 app.use(cors({
-  origin: (origin, callback) => {
-    // Non-browser requests (curl, mobile apps, server-to-server) send no
-    // Origin header — those are allowed through.
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    if (/^https:\/\/xdopestore-.*-xdope-s-projects\.vercel\.app$/.test(origin)) return cb(null, true);
+    return cb(new Error('Not allowed by CORS: ' + origin));
   },
   credentials: true,
 }));
