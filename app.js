@@ -5,19 +5,36 @@ const methodOverride = require('method-override');
 
 const app = express();
 
-const allowedOrigins = [
+// CORS allow-list.
+//   - Localhost ports for local dev across the three apps.
+//   - Anything passed via the FRONTEND_URL or CORS_ORIGINS env var (comma-
+//     separated) on Render, so we can add custom domains without redeploying.
+//   - Any *.vercel.app deploy from the xdope-s-projects team - this auto-
+//     covers both production aliases (xdopestore-..., admin-dashboard-...)
+//     AND every preview deploy hash. No editing on each new commit.
+const staticAllowed = [
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:3002',
-  'https://xdopestore-amwugmizc-xdope-s-projects.vercel.app',
 ];
-if (process.env.FRONTEND_URL) allowedOrigins.push(process.env.FRONTEND_URL);
+const envAllowed = []
+  .concat(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : [])
+  .concat(
+    process.env.CORS_ORIGINS
+      ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+      : []
+  );
+const allowedOrigins = staticAllowed.concat(envAllowed);
+
+// Matches any deploy URL in the xdope-s-projects Vercel team:
+//   https://<project>-<deploy-hash>-xdope-s-projects.vercel.app
+const VERCEL_TEAM_ORIGIN = /^https:\/\/[a-z0-9-]+-xdope-s-projects\.vercel\.app$/;
 
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
-    if (/^https:\/\/xdopestore-.*-xdope-s-projects\.vercel\.app$/.test(origin)) return cb(null, true);
+    if (VERCEL_TEAM_ORIGIN.test(origin)) return cb(null, true);
     return cb(new Error('Not allowed by CORS: ' + origin));
   },
   credentials: true,
