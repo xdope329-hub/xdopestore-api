@@ -5,6 +5,13 @@ const methodOverride = require('method-override');
 
 const app = express();
 
+// Trust one proxy hop. Render (and any similar PaaS) puts a reverse proxy
+// in front of your service; without this, express-rate-limit sees every
+// request as coming from the proxy IP and would rate-limit all users as
+// one. `1` means we trust exactly one X-Forwarded-For hop, which is what
+// Render adds.
+app.set('trust proxy', 1);
+
 // CORS allow-list.
 //   - Localhost ports for local dev across the three apps.
 //   - Anything passed via the FRONTEND_URL or CORS_ORIGINS env var (comma-

@@ -1,36 +1,111 @@
 const router = require('express').Router();
-const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
+const { signToken } = require('../config/jwt');
+const {
+  issueRefreshToken,
+  rotateRefreshToken,
+  revokeRefreshToken,
+  revokeAllForUser,
+} = require('../config/refreshTokens');
+const {
+  loginLimiter,
+  registerLimiter,
+  passwordResetLimiter,
+} = require('../middleware/rateLimiters');
 
-function signToken(id) {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
+// Dummy hash to keep login response time constant when the email isn't found
+// (prevents email-existence enumeration via timing).
+const DUMMY_HASH = '$2a$12$CwTycUXWue0Thq9StjUM0uJ8w/8g4iPqYX0FZ7RgFqvZQ.KMz.T1i';
+
+function isPasswordStrong(pw) {
+  if (typeof pw !== 'string') return false;
+  if (pw.length < 8 || pw.length > 128) return false;
+  if (!/[A-Za-z]/.test(pw)) return false;
+  if (!/[0-9]/.test(pw)) return false;
+  return true;
+}
+
+// Bundle the token pair a client needs to keep a session alive.
+async function issueSession(user, req) {
+  const access_token = signToken(user._id);
+  const refresh_token = await issueRefreshToken(user._id, req);
+  return { access_token, refresh_token, token: access_token }; // `token` for legacy client compat
 }
 
 // POST /login
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(422).json({ message: 'Email and password required' });
-  const user = await User.findOne({ email }).populate('role');
-  if (!user) return res.status(401).json({ message: 'Invalid credentials' });
-  const valid = await user.comparePassword(password);
-  if (!valid) return res.status(401).json({ message: 'Invalid credentials' });
-  const token = signToken(user._id);
-  res.json({ token, access_token: token, data: user });
+
+  const user = await User.findOne({ email: String(email).toLowerCase() }).populate('role');
+  const hashToTest = user ? user.password : DUMMY_HASH;
+  const valid = await bcrypt.compare(password, hashToTest);
+  if (!user || !valid) return res.status(401).json({ message: 'Invalid credentials' });
+  if (user.status === 0) return res.status(403).json({ message: 'Account disabled' });
+
+  const session = await issueSession(user, req);
+  res.json({ ...session, data: user });
 });
 
 // POST /register
-router.post('/register', async (req, res) => {
+router.post('/register', registerLimiter, async (req, res) => {
   const Role = require('../models/Role');
   const { name, email, password, phone, country_code } = req.body;
-  const exists = await User.findOne({ email });
+  if (!name || !email || !password) {
+    return res.status(422).json({ message: 'Name, email and password are required' });
+  }
+  if (!isPasswordStrong(password)) {
+    return res.status(422).json({
+      message: 'Password must be 8-128 characters and contain at least one letter and one number',
+    });
+  }
+  const normalized = String(email).toLowerCase();
+  const exists = await User.findOne({ email: normalized });
   if (exists) return res.status(422).json({ message: 'Email already registered' });
+
   const consumerRole = await Role.findOne({ name: 'consumer' });
-  const user = await User.create({ name, email, password, phone, country_code, role: consumerRole?._id });
-  // (Wallet auto-creation removed when the consumer wallet feature was retired.)
+  const user = await User.create({ name, email: normalized, password, phone, country_code, role: consumerRole?._id });
   const populated = await User.findById(user._id).populate('role');
-  const token = signToken(user._id);
-  res.status(201).json({ token, access_token: token, data: populated });
+  const session = await issueSession(user, req);
+  res.status(201).json({ ...session, data: populated });
+});
+
+// POST /refresh - swap a refresh token for a new access token + rotated refresh
+router.post('/refresh', async (req, res) => {
+  const rawRefresh = req.body?.refresh_token || req.headers['x-refresh-token'];
+  if (!rawRefresh) return res.status(401).json({ message: 'Missing refresh token' });
+
+  try {
+    const { user_id, refresh_token } = await rotateRefreshToken(rawRefresh, req);
+    const user = await User.findById(user_id);
+    if (!user || user.status === 0) return res.status(401).json({ message: 'Account not active' });
+    const access_token = signToken(user_id);
+    res.json({ access_token, refresh_token, token: access_token });
+  } catch (err) {
+    // Every failure looks the same to the client - don't distinguish
+    // "unknown" vs "expired" vs "replay-detected".
+    return res.status(401).json({ message: 'Invalid or expired refresh token' });
+  }
+});
+
+// POST /logout - revoke a single refresh token (this device)
+router.post('/logout', async (req, res) => {
+  const rawRefresh = req.body?.refresh_token || req.headers['x-refresh-token'];
+  await revokeRefreshToken(rawRefresh);
+  res.json({ message: 'Logged out' });
+});
+
+// POST /logout/all - requires access token; revokes every refresh for the user
+router.post('/logout/all', auth, async (req, res) => {
+  await revokeAllForUser(req.user._id);
+  res.json({ message: 'Logged out from all devices' });
+});
+
+// GET /logout - kept as a no-op for legacy clients that don't send the token
+router.get('/logout', (req, res) => {
+  res.json({ message: 'Logged out' });
 });
 
 // GET /self
@@ -41,62 +116,66 @@ router.get('/self', auth, async (req, res) => {
   const user = await require('../models/User').findById(req.user._id)
     .populate('role')
     .populate('profile_image_id', 'asset_url original_url')
-    .select('-password');
+    .select('-password -otp -otp_expires_at -otp_verified_at -otp_verified_expires_at');
   const obj = transformUser(user);
-  // Admin role (system_reserve='1') gets all permissions
   const isAdmin = user.role?.system_reserve === '1';
   obj.permission = isAdmin ? PERMISSIONS : resolvePermissions(user.role?.permissions || []);
-  // Inline the user's saved addresses so the storefront account & checkout pages
-  // can pre-fill / preselect without an extra request.
   obj.address = await Address.find({ user_id: req.user._id }).sort({ is_default: -1, createdAt: -1 });
   res.json(obj);
 });
 
-// POST /forgot-password
-router.post('/forgot-password', async (req, res) => {
-  const { email } = req.body;
-  const user = await User.findOne({ email });
-  if (!user) return res.status(404).json({ message: 'User not found' });
-  user.otp = Math.floor(100000 + Math.random() * 900000).toString();
-  user.otp_expires_at = new Date(Date.now() + 15 * 60 * 1000);
-  await user.save({ validateBeforeSave: false });
-  // In production send email — for local dev just return the OTP
-  res.json({ message: 'OTP sent', otp: user.otp, email: user.email });
+// POST /forgot-password (unchanged behaviour, still rate-limited + no leaks)
+router.post('/forgot-password', passwordResetLimiter, async (req, res) => {
+  const { email } = req.body || {};
+  if (!email) return res.status(422).json({ message: 'Email required' });
+  const normalized = String(email).toLowerCase();
+  const user = await User.findOne({ email: normalized });
+  if (user) {
+    user.otp = String(Math.floor(100000 + Math.random() * 900000));
+    user.otp_expires_at = new Date(Date.now() + 15 * 60 * 1000);
+    await user.save({ validateBeforeSave: false });
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[forgot-password] OTP for', normalized, '=', user.otp);
+    }
+  }
+  res.json({ message: 'If that email is registered, a reset code has been sent.' });
 });
 
-// POST /verify-otp  (alias: /verify-token)
 router.post('/verify-otp', async (req, res) => {
-  const { email, otp } = req.body;
-  const user = await User.findOne({ email });
-  if (!user || user.otp !== otp || user.otp_expires_at < new Date()) {
+  const { email, otp } = req.body || {};
+  if (!email || !otp) return res.status(422).json({ message: 'Email and OTP required' });
+  const user = await User.findOne({ email: String(email).toLowerCase() });
+  if (!user || !user.otp || user.otp !== String(otp) || !user.otp_expires_at || user.otp_expires_at < new Date()) {
     return res.status(422).json({ message: 'Invalid or expired OTP' });
   }
-  res.json({ message: 'OTP verified', email: user.email });
-});
-router.post('/verify-token', async (req, res) => {
-  const { email, otp } = req.body;
-  const user = await User.findOne({ email });
-  if (!user || user.otp !== otp || user.otp_expires_at < new Date()) {
-    return res.status(422).json({ message: 'Invalid or expired OTP' });
-  }
-  res.json({ message: 'OTP verified', email: user.email });
-});
-
-// POST /update-password
-router.post('/update-password', async (req, res) => {
-  const { email, otp, password } = req.body;
-  const user = await User.findOne({ email });
-  if (!user || user.otp !== otp) return res.status(422).json({ message: 'Invalid request' });
-  user.password = password;
+  user.otp_verified_at = new Date();
+  user.otp_verified_expires_at = new Date(Date.now() + 10 * 60 * 1000);
   user.otp = undefined;
   user.otp_expires_at = undefined;
-  await user.save();
-  res.json({ message: 'Password updated' });
+  await user.save({ validateBeforeSave: false });
+  res.json({ message: 'OTP verified', email: user.email });
 });
+router.post('/verify-token', (req, res, next) => { req.url = '/verify-otp'; router.handle(req, res, next); });
 
-// GET /logout
-router.get('/logout', (req, res) => {
-  res.json({ message: 'Logged out' });
+router.post('/update-password', async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(422).json({ message: 'Email and password required' });
+  if (!isPasswordStrong(password)) {
+    return res.status(422).json({
+      message: 'Password must be 8-128 characters and contain at least one letter and one number',
+    });
+  }
+  const user = await User.findOne({ email: String(email).toLowerCase() });
+  if (!user || !user.otp_verified_expires_at || user.otp_verified_expires_at < new Date()) {
+    return res.status(422).json({ message: 'OTP not verified or verification expired. Please restart the reset flow.' });
+  }
+  user.password = password;
+  user.otp_verified_at = undefined;
+  user.otp_verified_expires_at = undefined;
+  await user.save();
+  // Force re-login everywhere after a password change
+  await revokeAllForUser(user._id);
+  res.json({ message: 'Password updated' });
 });
 
 module.exports = router;
