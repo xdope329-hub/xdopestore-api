@@ -10,12 +10,16 @@
     "dev": "nodemon server.js",
     "start": "node server.js",
     "seed": "node seed/seed.js",
-    "test": "jest --runInBand --detectOpenHandles --forceExit"
+    "test": "jest --runInBand --detectOpenHandles --forceExit",
+    "reset": "node seed/reset.js"
   },
   "jest": {
     "testEnvironment": "node",
     "testTimeout": 60000,
-    "testPathIgnorePatterns": ["/node_modules/", "/__tests__/_support/"]
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/__tests__/_support/"
+    ]
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -24,6 +28,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.18.2",
     "express-async-errors": "^3.1.1",
+    "express-rate-limit": "^7.5.1",
     "jsonwebtoken": "^9.0.2",
     "mercadopago": "^2.12.0",
     "method-override": "^3.0.0",
