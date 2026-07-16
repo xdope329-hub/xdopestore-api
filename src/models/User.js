@@ -16,6 +16,9 @@ const userSchema = new mongoose.Schema({
   role: { type: mongoose.Schema.Types.ObjectId, ref: 'Role' },
   profile_image_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment', default: null },
   email_verified_at: Date,
+  // Social login (Sign in with Google)
+  google_id: { type: String, index: true, sparse: true }, // Google `sub` claim
+  auth_provider: { type: String, enum: ['local', 'google'], default: 'local' },
   // Password reset flow
   otp: String,                          // 6-digit code, cleared after use
   otp_expires_at: Date,                 // OTP lifetime (15 min)

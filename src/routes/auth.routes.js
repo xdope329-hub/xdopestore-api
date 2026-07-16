@@ -14,6 +14,8 @@ const {
   registerLimiter,
   passwordResetLimiter,
 } = require('../middleware/rateLimiters');
+const { verifyRecaptcha } = require('../middleware/recaptcha');
+const { verifyGoogleIdToken } = require('../config/googleAuth');
 
 // Dummy hash to keep login response time constant when the email isn't found
 // (prevents email-existence enumeration via timing).
@@ -35,7 +37,7 @@ async function issueSession(user, req) {
 }
 
 // POST /login
-router.post('/login', loginLimiter, async (req, res) => {
+router.post('/login', loginLimiter, verifyRecaptcha, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(422).json({ message: 'Email and password required' });
 
@@ -50,7 +52,7 @@ router.post('/login', loginLimiter, async (req, res) => {
 });
 
 // POST /register
-router.post('/register', registerLimiter, async (req, res) => {
+router.post('/register', registerLimiter, verifyRecaptcha, async (req, res) => {
   const Role = require('../models/Role');
   const { name, email, password, phone, country_code } = req.body;
   if (!name || !email || !password) {
@@ -70,6 +72,63 @@ router.post('/register', registerLimiter, async (req, res) => {
   const populated = await User.findById(user._id).populate('role');
   const session = await issueSession(user, req);
   res.status(201).json({ ...session, data: populated });
+});
+
+// POST /login/google - Sign in with Google (Google Identity Services credential)
+// No captcha here: Google's own flow already gates bots, and the ID token is
+// verified server-side against GOOGLE_CLIENT_ID.
+router.post('/login/google', loginLimiter, async (req, res) => {
+  const { credential } = req.body || {};
+  if (!credential) return res.status(422).json({ message: 'Google credential required' });
+
+  let payload;
+  try {
+    payload = await verifyGoogleIdToken(credential);
+  } catch (err) {
+    if (err.code === 'NOT_CONFIGURED') {
+      return res.status(503).json({ message: 'Google login is not configured on this server' });
+    }
+    if (err.code === 'UNVERIFIED') {
+      return res.status(403).json({ message: 'Google account email is not verified' });
+    }
+    return res.status(401).json({ message: 'Invalid Google credential' });
+  }
+
+  const email = String(payload.email).toLowerCase();
+  let user = await User.findOne({ email }).populate('role');
+
+  if (user) {
+    if (user.status === 0) return res.status(403).json({ message: 'Account disabled' });
+    // Link the Google identity to the existing account on first Google login.
+    if (!user.google_id) {
+      user.google_id = payload.sub;
+      if (!user.email_verified_at) user.email_verified_at = new Date();
+      await user.save({ validateBeforeSave: false });
+    } else if (user.google_id !== payload.sub) {
+      // Same email but a different Google subject — refuse rather than merge.
+      return res.status(401).json({ message: 'Google account mismatch for this email' });
+    }
+  } else {
+    const Role = require('../models/Role');
+    const crypto = require('crypto');
+    const consumerRole = await Role.findOne({ name: 'consumer' });
+    // Google-only accounts still need a password field: generate a random one
+    // nobody knows. The user can set a real one later via the reset flow.
+    const randomPassword = `${crypto.randomBytes(24).toString('base64url')}aA1`;
+    const created = await User.create({
+      name: payload.name || email.split('@')[0],
+      email,
+      password: randomPassword,
+      google_id: payload.sub,
+      auth_provider: 'google',
+      email_verified_at: new Date(),
+      role: consumerRole?._id,
+    });
+    user = await User.findById(created._id).populate('role');
+  }
+
+  const session = await issueSession(user, req);
+  res.json({ ...session, data: user });
 });
 
 // POST /refresh - swap a refresh token for a new access token + rotated refresh
