@@ -4,6 +4,9 @@ const auth = require('../middleware/auth');
 const { multer, cloudinary } = require('../middleware/upload');
 const { getUsedAttachmentIds } = require('../utils/attachmentUsage');
 
+const isAttachmentUsed = ({ usedIds, usedUrls }, att) =>
+  usedIds.has(String(att._id)) || (att.original_url && usedUrls.has(att.original_url));
+
 // POST /attachment
 router.post('/', auth, multer.any(), async (req, res) => {
   const files = req.files || (req.file ? [req.file] : []);
@@ -32,13 +35,13 @@ router.get('/', auth, async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.paginate) || 20;
   const total = await Attachment.countDocuments();
-  const [rows, usedIds] = await Promise.all([
+  const [rows, usage] = await Promise.all([
     Attachment.find().skip((page - 1) * limit).limit(limit).sort({ createdAt: -1 }),
     getUsedAttachmentIds(),
   ]);
   const data = rows.map((r) => {
     const obj = r.toJSON();
-    obj.is_used = usedIds.has(String(r._id));
+    obj.is_used = isAttachmentUsed(usage, r);
     return obj;
   });
   res.json({ current_page: page, last_page: Math.ceil(total / limit), total, per_page: limit, data });
@@ -62,9 +65,9 @@ router.delete('/deleteAll', auth, async (req, res) => {
   let toDelete = attachments;
   let skipped = [];
   if (!force) {
-    const usedIds = await getUsedAttachmentIds();
-    toDelete = attachments.filter((a) => !usedIds.has(String(a._id)));
-    skipped = attachments.filter((a) => usedIds.has(String(a._id))).map((a) => String(a._id));
+    const usage = await getUsedAttachmentIds();
+    toDelete = attachments.filter((a) => !isAttachmentUsed(usage, a));
+    skipped = attachments.filter((a) => isAttachmentUsed(usage, a)).map((a) => String(a._id));
     if (toDelete.length === 0 && skipped.length > 0) {
       return res.status(409).json({
         message: 'All selected attachments are in use',
@@ -88,8 +91,8 @@ router.delete('/:id', auth, async (req, res) => {
 
   const force = req.query.force === 'true';
   if (!force) {
-    const usedIds = await getUsedAttachmentIds();
-    if (usedIds.has(String(att._id))) {
+    const usage = await getUsedAttachmentIds();
+    if (isAttachmentUsed(usage, att)) {
       return res.status(409).json({ message: 'Attachment is in use and cannot be deleted' });
     }
   }
