@@ -11,6 +11,10 @@ const populateThumb = (q) => q.populate('thumbnail_id');
 const serialize = (p) => {
   if (!p) return p;
   const obj = p.toJSON ? p.toJSON() : p;
+  // Mongoose's `id` virtual isn't emitted by toJSON unless virtuals are
+  // enabled on the schema, so surface it explicitly — the admin table keys
+  // every row action off `preset.id`.
+  if (obj._id && obj.id === undefined) obj.id = String(obj._id);
   if (obj.createdAt !== undefined) obj.created_at = obj.createdAt;
   if (obj.updatedAt !== undefined) obj.updated_at = obj.updatedAt;
   obj.thumbnail = obj.thumbnail_id || null;
