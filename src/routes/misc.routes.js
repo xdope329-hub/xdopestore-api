@@ -374,8 +374,31 @@ router.delete('/menu/:id', auth, adminOnly, async (req, res) => {
   res.json({ message: 'ok' });
 });
 
-// GET /subscribe
-router.post('/subscribe', ok);
+// POST /subscribe — newsletter opt-in, forwards to Brevo contact list
+router.post('/subscribe', async (req, res) => {
+  const email = req.body?.email;
+  const name = req.body?.name;
+  if (!email || !/^\S+@\S+\.\S+$/.test(String(email))) {
+    return res.status(422).json({ message: 'Valid email required' });
+  }
+  const mail = require('../services/mail');
+  if (!mail.isConfigured()) {
+    // Fail silently for the storefront — user sees the same success message.
+    console.warn('[subscribe] BREVO_API_KEY not set; skipping');
+    return res.json({ message: 'Subscribed' });
+  }
+  try {
+    await mail.subscribeToNewsletter({ email: String(email).toLowerCase(), name });
+    res.json({ message: 'Subscribed' });
+  } catch (err) {
+    // "Contact already exist" is a 400 from Brevo — treat as success.
+    if (err.status === 400 && /already exist/i.test(err.message || '')) {
+      return res.json({ message: 'Subscribed' });
+    }
+    console.error('[subscribe] failed', err.message, err.details || '');
+    res.status(502).json({ message: 'Newsletter service unavailable' });
+  }
+});
 
 // GET /notice
 router.get('/notice', emptyList);

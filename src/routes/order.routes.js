@@ -108,6 +108,12 @@ router.post('/', auth, async (req, res) => {
 
   await Cart.deleteMany({ consumer_id: req.user._id });
   const populated = await Order.findById(order._id).populate(populateDetail);
+
+  const mail = require('../services/mail');
+  mail
+    .sendOrderConfirmation({ order: populated.toJSON(), consumer: populated.consumer_id })
+    .catch(mail.logMailError('order-confirmation'));
+
   res.status(201).json(transformOrder(populated));
 });
 
@@ -150,6 +156,8 @@ async function handleStatusUpdate(req, res) {
   const found = await q;
   if (!found) return res.status(404).json({ message: 'Order not found' });
 
+  const prevStatusId = String(found.status_id || '');
+
   const order = await Order.findByIdAndUpdate(
     found._id,
     { status_id: statusId },
@@ -157,6 +165,18 @@ async function handleStatusUpdate(req, res) {
   ).populate(populateDetail);
 
   if (!order) return res.status(404).json({ message: 'Order not found' });
+
+  if (String(order.status_id?._id || order.status_id || '') !== prevStatusId) {
+    const mail = require('../services/mail');
+    mail
+      .sendOrderStatusUpdate({
+        order: order.toJSON(),
+        consumer: order.consumer_id,
+        statusName: order.status_id?.name || 'updated',
+      })
+      .catch(mail.logMailError('order-status-update'));
+  }
+
   res.json(transformOrder(order));
 }
 
