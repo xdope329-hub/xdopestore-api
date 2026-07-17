@@ -196,6 +196,10 @@ router.post('/forgot-password', passwordResetLimiter, async (req, res) => {
     if (process.env.NODE_ENV !== 'production') {
       console.log('[forgot-password] OTP for', normalized, '=', user.otp);
     }
+    const mail = require('../services/mail');
+    mail
+      .sendPasswordResetOTP({ email: user.email, name: user.name, otp: user.otp })
+      .catch(mail.logMailError('forgot-password'));
   }
   res.json({ message: 'If that email is registered, a reset code has been sent.' });
 });

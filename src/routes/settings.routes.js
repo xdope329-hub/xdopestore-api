@@ -66,4 +66,20 @@ router.put('/', auth, adminOnly, async (req, res) => {
   res.json(setting);
 });
 
+// POST /settings/test-email — admin-only, fires a Brevo test email
+router.post('/test-email', auth, adminOnly, async (req, res) => {
+  const to = req.body?.email || req.body?.to;
+  if (!to) return res.status(422).json({ message: 'email required' });
+  const mail = require('../services/mail');
+  if (!mail.isConfigured()) {
+    return res.status(400).json({ message: 'BREVO_API_KEY is not set on the server' });
+  }
+  try {
+    await mail.sendTestEmail({ to });
+    res.json({ message: `Test email sent to ${to}` });
+  } catch (err) {
+    res.status(502).json({ message: err.message || 'Failed to send test email', details: err.details });
+  }
+});
+
 module.exports = router;
