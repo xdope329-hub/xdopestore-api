@@ -11,7 +11,10 @@
     "start": "node server.js",
     "seed": "node seed/seed.js",
     "test": "jest --runInBand --detectOpenHandles --forceExit",
-    "reset": "node seed/reset.js"
+    "reset": "node seed/reset.js",
+    "seed:e2e": "node -r dotenv/config seed/seed.js dotenv_config_path=.env.e2e",
+    "start:e2e": "node -r dotenv/config server.js dotenv_config_path=.env.e2e",
+    "reset:e2e": "node -r dotenv/config seed/reset.js dotenv_config_path=.env.e2e"
   },
   "jest": {
     "testEnvironment": "node",
