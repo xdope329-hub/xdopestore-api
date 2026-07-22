@@ -105,9 +105,13 @@ async function buildFilter(query) {
   }
 
   // Homepage / direct id usage: `category_ids=id1,id2` — already real ObjectIds.
+  // Expand to descendant categories too (same behaviour as the slug-based
+  // `category` filter above): a product assigned only to a subcategory must
+  // still show up when its parent category is requested.
   if (query.category_ids) {
     const ids = String(query.category_ids).split(',').map((id) => id.trim()).filter(Boolean);
-    filter.categories = { $in: ids };
+    const expanded = await expandCategoryIds(ids);
+    filter.categories = { $in: expanded.length ? expanded : ids };
   }
 
   // Brand filter accepts slugs or ids, comma-separated.
@@ -334,6 +338,30 @@ router.get('/:id', async (req, res) => {
   res.json(transformProduct(resolved));
 });
 
+/**
+ * The admin UI submits "" for every optional field the user left empty
+ * (brand_id, product_thumbnail_id, discount, ...). Mongoose cannot cast ""
+ * to ObjectId/Number/Date and throws — which used to 500 every UI product
+ * create. Drop empty-string values for all non-String schema paths and
+ * scrub empty entries out of arrays, recursively for variations too.
+ */
+function scrubEmptyNonStrings(obj, schema) {
+  if (!obj || typeof obj !== 'object') return obj;
+  for (const key of Object.keys(obj)) {
+    const value = obj[key];
+    const path = schema && typeof schema.path === 'function' ? schema.path(key) : null;
+    const isStringPath = path && path.instance === 'String';
+    if (value === '' && !isStringPath) {
+      delete obj[key]; // let the schema default (usually null) apply
+      continue;
+    }
+    if (Array.isArray(value)) {
+      obj[key] = value.filter((item) => item !== '' && item != null);
+    }
+  }
+  return obj;
+}
+
 function normalizeProductBody(body) {
   if (body.product_galleries_id !== undefined) {
     const ids = Array.isArray(body.product_galleries_id)
@@ -358,8 +386,18 @@ function normalizeProductBody(body) {
       return v;
     });
   }
+
+  // Drop ""-valued non-string fields (top level and inside each variation)
+  // so Mongoose casting never sees them.
+  scrubEmptyNonStrings(body, Product.schema);
+  const variationSchema = Product.schema.path('variations')?.schema;
+  if (Array.isArray(body.variations)) {
+    body.variations = body.variations.map((v) => scrubEmptyNonStrings(v, variationSchema));
+  }
   return body;
 }
+
+router.normalizeProductBody = normalizeProductBody; // exposed for unit tests
 
 // POST /product
 router.post('/', auth, adminOnly, async (req, res) => {
