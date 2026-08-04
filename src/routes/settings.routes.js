@@ -32,10 +32,13 @@ const DEFAULT_SETTING_VALUES = {
   },
   // Payment methods shown at checkout. The API's payment layer supports
   // 'cod' (contra entrega) and 'mercadopago' (Checkout Pro redirect).
+  // COD ships disabled — the store only offers Mercado Pago. Re-enable by
+  // flipping status to 1 (or via PUT /settings).
   payment_methods: [
-    { name: 'cod', status: 1 },
+    { name: 'cod', status: 0 },
     { name: 'mercadopago', status: 1 },
   ],
+  payment_methods_migrated_v2: true,
 };
 
 // GET /settings  — public (UI middleware calls this unauthenticated)
@@ -55,6 +58,15 @@ router.get('/', async (req, res) => {
       // Back-fill payment methods for databases created before they were
       // part of the defaults — otherwise checkout shows no payment options.
       merged.payment_methods = DEFAULT_SETTING_VALUES.payment_methods;
+      merged.payment_methods_migrated_v2 = true;
+      dirty = true;
+    } else if (!merged.payment_methods_migrated_v2) {
+      // One-time migration: hide COD on databases that got the earlier
+      // backfill (cod enabled). Runs once; later admin edits are respected.
+      merged.payment_methods = merged.payment_methods.map((m) =>
+        m?.name === 'cod' ? { ...m, status: 0 } : m
+      );
+      merged.payment_methods_migrated_v2 = true;
       dirty = true;
     }
     if (dirty) {
