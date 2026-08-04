@@ -75,9 +75,10 @@ router.post('/register', registerLimiter, verifyRecaptcha, async (req, res) => {
 });
 
 // POST /login/google - Sign in with Google (Google Identity Services credential)
-// No captcha here: Google's own flow already gates bots, and the ID token is
-// verified server-side against GOOGLE_CLIENT_ID.
-router.post('/login/google', loginLimiter, async (req, res) => {
+// Captcha is required here too (when RECAPTCHA_SECRET_KEY is set): the store
+// demands the captcha be solved before ANY login path, Google included.
+// The ID token is additionally verified server-side against GOOGLE_CLIENT_ID.
+router.post('/login/google', loginLimiter, verifyRecaptcha, async (req, res) => {
   const { credential } = req.body || {};
   if (!credential) return res.status(422).json({ message: 'Google credential required' });
 
@@ -196,10 +197,6 @@ router.post('/forgot-password', passwordResetLimiter, async (req, res) => {
     if (process.env.NODE_ENV !== 'production') {
       console.log('[forgot-password] OTP for', normalized, '=', user.otp);
     }
-    const mail = require('../services/mail');
-    mail
-      .sendPasswordResetOTP({ email: user.email, name: user.name, otp: user.otp })
-      .catch(mail.logMailError('forgot-password'));
   }
   res.json({ message: 'If that email is registered, a reset code has been sent.' });
 });
