@@ -30,6 +30,12 @@ const DEFAULT_SETTING_VALUES = {
     track_order: true,
     multivendor: true,
   },
+  // Payment methods shown at checkout. The API's payment layer supports
+  // 'cod' (contra entrega) and 'mercadopago' (Checkout Pro redirect).
+  payment_methods: [
+    { name: 'cod', status: 1 },
+    { name: 'mercadopago', status: 1 },
+  ],
 };
 
 // GET /settings  — public (UI middleware calls this unauthenticated)
@@ -37,13 +43,25 @@ router.get('/', async (req, res) => {
   let setting = await Setting.findOne();
   if (!setting) {
     setting = await Setting.create({ values: DEFAULT_SETTING_VALUES });
-  } else if (!setting.values?.general?.default_currency?.code) {
-    // Back-fill if the Setting doc existed but never had a currency set.
+  } else {
+    let dirty = false;
     const merged = setting.values || {};
-    merged.general = { ...(merged.general || {}), default_currency: DEFAULT_SETTING_VALUES.general.default_currency };
-    setting.values = merged;
-    setting.markModified('values');
-    await setting.save();
+    if (!merged.general?.default_currency?.code) {
+      // Back-fill if the Setting doc existed but never had a currency set.
+      merged.general = { ...(merged.general || {}), default_currency: DEFAULT_SETTING_VALUES.general.default_currency };
+      dirty = true;
+    }
+    if (!Array.isArray(merged.payment_methods) || merged.payment_methods.length === 0) {
+      // Back-fill payment methods for databases created before they were
+      // part of the defaults — otherwise checkout shows no payment options.
+      merged.payment_methods = DEFAULT_SETTING_VALUES.payment_methods;
+      dirty = true;
+    }
+    if (dirty) {
+      setting.values = merged;
+      setting.markModified('values');
+      await setting.save();
+    }
   }
   res.json(setting);
 });

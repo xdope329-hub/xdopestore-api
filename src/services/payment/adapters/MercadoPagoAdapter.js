@@ -21,6 +21,16 @@ class MercadoPagoAdapter extends PaymentGateway {
     const client = this._getClient();
     const preference = new Preference(client);
 
+    // Mercado Pago rejects `auto_return` when the back_urls are not publicly
+    // reachable (e.g. http://localhost:3001 in local dev) with the error
+    // "auto_return invalid. back_url.success must be defined". Locally we
+    // omit auto_return (the buyer clicks "Volver al sitio" manually) and the
+    // webhook URL (MP can't reach localhost anyway — /payment/verify on the
+    // return page confirms the payment instead).
+    const storeUrl = process.env.STORE_URL || '';
+    const baseUrl = process.env.BASE_URL || '';
+    const isLocal = (u) => /localhost|127\.0\.0\.1/i.test(u);
+
     const body = {
       items: order.products.map(p => ({
         id: String(p.product_id),
@@ -31,12 +41,12 @@ class MercadoPagoAdapter extends PaymentGateway {
       })),
       external_reference: String(order._id),
       back_urls: {
-        success: `${process.env.STORE_URL}/order/success?id=${order._id}`,
-        failure: `${process.env.STORE_URL}/order/failure?id=${order._id}`,
-        pending: `${process.env.STORE_URL}/order/pending?id=${order._id}`,
+        success: `${storeUrl}/order/success?id=${order._id}`,
+        failure: `${storeUrl}/order/failure?id=${order._id}`,
+        pending: `${storeUrl}/order/pending?id=${order._id}`,
       },
-      auto_return: 'approved',
-      notification_url: `${process.env.BASE_URL}/payment/webhook`,
+      ...(isLocal(storeUrl) ? {} : { auto_return: 'approved' }),
+      ...(isLocal(baseUrl) ? {} : { notification_url: `${baseUrl}/payment/webhook` }),
     };
 
     const result = await preference.create({ body });
