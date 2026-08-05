@@ -14,6 +14,14 @@ function transformProduct(p) {
   if (!p) return p;
   const obj = p.toJSON ? p.toJSON() : p;
   addTimestampAliases(obj);
+  // Defensive cleanup: older API versions could persist null entries in these
+  // arrays (e.g. tags saved as [null] by a buggy admin build). A null here
+  // white-screens the admin edit form, so never let one out of the API.
+  if (Array.isArray(obj.tags)) {
+    obj.tags = obj.tags.filter((t) => t != null && t !== '');
+  }
+  if (Array.isArray(obj.categories)) obj.categories = obj.categories.filter(Boolean);
+  if (Array.isArray(obj.product_images)) obj.product_images = obj.product_images.filter(Boolean);
   obj.product_thumbnail = obj.product_thumbnail_id || null;
   obj.size_chart_image = obj.size_chart_image_id || null;
   const galleries = Array.isArray(obj.product_images) ? obj.product_images : [];
