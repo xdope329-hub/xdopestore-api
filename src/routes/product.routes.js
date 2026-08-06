@@ -156,9 +156,21 @@ async function buildFilter(query) {
 
   if (query.is_featured) filter.is_featured = query.is_featured === 'true';
   if (query.is_trending) filter.is_trending = query.is_trending === 'true';
-  if (query.ids) filter._id = { $in: query.ids.split(',').map((id) => id.trim()).filter(Boolean) };
+  // Admin product pickers send with_union_products=1 when `ids` contains the
+  // products already saved in a form. In that mode the endpoint must still
+  // return the other active products as selectable options. Treating `ids` as
+  // a hard filter here leaves the picker empty when a saved product was
+  // deleted, which prevents the administrator from replacing the stale ID.
+  // Storefront requests do not send this flag, so their explicit ID filtering
+  // remains unchanged.
+  const includeOtherProducts = String(query.with_union_products) === '1';
+  if (query.ids && !includeOtherProducts) {
+    filter._id = { $in: query.ids.split(',').map((id) => id.trim()).filter(Boolean) };
+  }
   return filter;
 }
+
+router.buildFilter = buildFilter; // exposed for focused unit tests
 
 // Fetch review stats and inject into product object
 async function attachReviews(product, userId) {
@@ -394,15 +406,77 @@ function normalizeProductBody(body) {
   if (Array.isArray(body.variations)) {
     body.variations = body.variations.map((v) => scrubEmptyNonStrings(v, variationSchema));
   }
+
+  deriveParentPricingFromVariations(body);
+  return body;
+}
+
+/**
+ * Variable ("classified") products keep price / quantity / stock on each
+ * variant, so the admin deliberately omits the top-level fields. The schema
+ * still needs them (price is required, and the storefront shows a "from"
+ * price and total stock), so derive them from the variants:
+ *   price / sale_price -> cheapest sellable variant
+ *   quantity           -> sum of variant stock
+ *   stock_status       -> in_stock when any variant has stock
+ * Simple products are left untouched.
+ */
+function deriveParentPricingFromVariations(body) {
+  // NOTE: deliberately not gated on body.type — any product that carries
+  // priced variants can have its parent pricing derived. Gating on
+  // type === 'classified' left a hole whenever the type field arrived
+  // missing/misspelled, which resurfaced as a 500 "price is required".
+  const variations = Array.isArray(body.variations) ? body.variations.filter(Boolean) : [];
+  if (variations.length === 0) return body;
+
+  const priced = variations
+    .map((v) => ({
+      price: Number(v.price),
+      sale_price: v.sale_price === '' || v.sale_price == null ? null : Number(v.sale_price),
+      discount: v.discount === '' || v.discount == null ? null : Number(v.discount),
+      quantity: Number(v.quantity) || 0,
+      stock_status: v.stock_status,
+    }))
+    .filter((v) => Number.isFinite(v.price));
+
+  if (priced.length === 0) return body;
+
+  // Cheapest by what the shopper actually pays.
+  const effective = (v) => (Number.isFinite(v.sale_price) && v.sale_price > 0 ? v.sale_price : v.price);
+  const cheapest = priced.reduce((min, v) => (effective(v) < effective(min) ? v : min), priced[0]);
+
+  if (body.price === undefined || body.price === '' || body.price === null) body.price = cheapest.price;
+  if (body.sale_price === undefined || body.sale_price === '' || body.sale_price === null) {
+    body.sale_price = Number.isFinite(cheapest.sale_price) ? cheapest.sale_price : cheapest.price;
+  }
+  if (body.discount === undefined || body.discount === '' || body.discount === null) {
+    body.discount = Number.isFinite(cheapest.discount) ? cheapest.discount : null;
+  }
+  if (body.quantity === undefined || body.quantity === '' || body.quantity === null) {
+    body.quantity = priced.reduce((sum, v) => sum + v.quantity, 0);
+  }
+  if (!body.stock_status) {
+    const anyInStock = priced.some((v) => v.stock_status !== 'out_of_stock' && v.quantity > 0);
+    body.stock_status = anyInStock ? 'in_stock' : 'out_of_stock';
+  }
   return body;
 }
 
 router.normalizeProductBody = normalizeProductBody; // exposed for unit tests
+router.deriveParentPricingFromVariations = deriveParentPricingFromVariations;
 
 // POST /product
 router.post('/', auth, adminOnly, async (req, res) => {
   const body = normalizeProductBody(req.body);
   if (!body.slug && body.name) body.slug = slugify(body.name, { lower: true, strict: true });
+  if (body.price === undefined || body.price === null) {
+    // Should be unreachable once variants are priced — log the shape so a
+    // genuine case is diagnosable instead of surfacing as a bare 500.
+    console.warn('[product:create] no price after normalize', {
+      name: body.name, type: body.type, product_type: body.product_type,
+      variations: Array.isArray(body.variations) ? body.variations.length : 0,
+    });
+  }
   const product = await Product.create({ ...body, created_by_id: req.user._id });
   res.status(201).json(product);
 });

@@ -24,7 +24,20 @@ const productSchema = new mongoose.Schema({
   unit: String,
   weight: Number,
   quantity: { type: Number, default: 0 },
-  price: { type: Number, required: true },
+  // Variable ("classified") products price each variant individually, so the
+  // parent price is derived (see deriveParentPricingFromVariations) rather
+  // than entered — only simple products must carry their own price.
+  price: {
+    type: Number,
+    required: [
+      function () {
+        // Only a product with no priced variants must carry its own price.
+        const hasVariants = Array.isArray(this.variations) && this.variations.length > 0;
+        return this.type !== 'classified' && !hasVariants;
+      },
+      'Price is required',
+    ],
+  },
   sale_price: Number,
   discount: Number,
   sku: String,

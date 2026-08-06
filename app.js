@@ -97,6 +97,16 @@ app.use((req, res) => {
 // Error handler
 app.use((err, req, res, next) => {
   console.error(err);
+  // Mongoose validation failures are the caller's fault, not a server crash —
+  // surface them as a readable 422 the admin can show in a toast.
+  if (err && err.name === 'ValidationError' && err.errors) {
+    const fields = Object.keys(err.errors);
+    const message = Object.values(err.errors).map((e) => e.message).join(' · ');
+    return res.status(422).json({ message: message || 'Validation failed', fields });
+  }
+  if (err && err.name === 'CastError') {
+    return res.status(422).json({ message: `Invalid value for ${err.path}`, fields: [err.path] });
+  }
   res.status(err.status || 500).json({ message: err.message || 'Internal Server Error' });
 });
 
