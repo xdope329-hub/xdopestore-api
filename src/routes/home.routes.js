@@ -63,9 +63,9 @@ async function buildContent() {
     products_ids: productIds,
     home_banner: { status: 0, banners: [] },
     offer_banner: { banner_1: { status: 0 }, banner_2: { status: 0 } },
-    products_list: { status: 1, title: 'Featured Products', product_ids: productIds },
-    category_product: { status: 1, title: 'Shop by Category', category_ids: categoryIds },
-    brands: { status: 1, title: 'Our Brands', brand_ids: brandIds },
+    products_list: { status: 1, title: 'Productos Destacados', product_ids: productIds },
+    category_product: { status: 1, title: 'Compra por Categoría', category_ids: categoryIds },
+    brands: { status: 1, title: 'Nuestras Marcas', brand_ids: brandIds },
     services: { status: 0, banners: [] },
     social_media: { status: 0, banners: [] },
     parallax_banner: { status: 0 },
@@ -93,7 +93,7 @@ router.get('/:slug?', async (req, res) => {
   content.category_product = {
     ...(content.category_product || {}),
     status: content.category_product?.status ?? 1,
-    title: content.category_product?.title || 'Shop by Category',
+    title: content.category_product?.title || 'Compra por Categoría',
     category_ids: liveCategoryIds, // Overrides any statically saved category IDs with the fresh `liveCategoryIds`
   };
 
@@ -103,7 +103,7 @@ router.get('/:slug?', async (req, res) => {
   const adminBrandIds = Array.isArray(savedBrands.brand_ids) ? savedBrands.brand_ids.filter(Boolean) : null;
   content.brands = {
     status: savedBrands.status !== undefined ? Number(!!savedBrands.status) : (defaults.brands.status ?? 1),
-    title: savedBrands.title || defaults.brands.title || 'Our Brands',
+    title: savedBrands.title || defaults.brands.title || 'Nuestras Marcas',
     brand_ids: adminBrandIds && adminBrandIds.length ? adminBrandIds : defaults.brands.brand_ids,
   };
   // Drop the legacy alias so the response stays canonical

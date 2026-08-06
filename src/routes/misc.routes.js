@@ -340,37 +340,102 @@ router.post('/question-and-answer/feedback', auth, async (req, res) => {
 
 // Menu CRUD
 const Menu = require('../models/Menu');
+const mongooseLib = require('mongoose');
+
+// The admin form sends "" for unset ObjectId fields and expects numeric
+// toggles — normalize so Mongoose casting never throws.
+function scrubMenuBody(body) {
+  const clean = { ...body };
+  for (const key of ['parent_id', 'banner_image_id', 'item_image_id']) {
+    if (clean[key] === '' || clean[key] === undefined) clean[key] = null;
+    // MultiSelect may hand us an array with a single id
+    if (Array.isArray(clean[key])) clean[key] = clean[key][0] || null;
+  }
+  for (const key of ['mega_menu', 'is_target_blank', 'status', 'sort_order']) {
+    if (clean[key] !== undefined) clean[key] = Number(clean[key]) || 0;
+  }
+  delete clean._method;
+  delete clean._id;
+  delete clean.id;
+  return clean;
+}
+
+const isValidMenuId = (id) => mongooseLib.Types.ObjectId.isValid(id) && String(id).length === 24;
+
+// Nest children under their parents (parent_id based). Falls back to the
+// legacy inline `item` array used by seeded menus so old data still shows
+// submenus in the storefront.
+function buildMenuTree(items) {
+  const json = items.map((i) => (i.toJSON ? i.toJSON() : i));
+  const byParent = new Map();
+  json.forEach((i) => {
+    const key = i.parent_id ? String(i.parent_id) : null;
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(i);
+  });
+  const attach = (node) => {
+    let children = byParent.get(String(node._id)) || [];
+    if (children.length === 0 && Array.isArray(node.item) && node.item.length > 0) {
+      children = node.item.map((c, idx) => ({ ...c, id: c.id || `${node.id}-legacy-${idx}`, link_type: c.link_type || 'link', legacy: true }));
+    }
+    if (children.length > 0) node.child = children.map(attach);
+    return node;
+  };
+  return (byParent.get(null) || []).map(attach);
+}
 
 router.get('/menu', async (req, res) => {
   let items = await Menu.find({ status: 1 }).sort({ sort_order: 1, createdAt: 1 });
   if (items.length === 0) {
     const defaults = [
-      { title: 'Home', path: '/', class: '0', sort_order: 0 },
-      { title: 'Shop', path: '/collections', class: '0', sort_order: 1 },
-      { title: 'About Us', path: '/about-us', class: '0', sort_order: 2 },
-      { title: 'Contact', path: '/contact-us', class: '0', sort_order: 3 },
+      { title: 'Inicio', path: '/', class: '0', sort_order: 0 },
+      { title: 'Tienda', path: '/collections', class: '0', sort_order: 1 },
+      { title: 'Nosotros', path: '/about-us', class: '0', sort_order: 2 },
+      { title: 'Contacto', path: '/contact-us', class: '0', sort_order: 3 },
     ];
     items = await Menu.insertMany(defaults);
   }
-  res.json({ data: items });
+  let tree = buildMenuTree(items);
+  if (req.query.search) {
+    const q = String(req.query.search).toLowerCase();
+    tree = tree.filter((i) => i.title?.toLowerCase().includes(q) || (i.child || []).some((c) => c.title?.toLowerCase().includes(q)));
+  }
+  res.json({ data: tree });
 });
 router.post('/menu', auth, adminOnly, async (req, res) => {
   const count = await Menu.countDocuments();
-  const item = await Menu.create({ ...req.body, sort_order: count });
+  const item = await Menu.create({ ...scrubMenuBody(req.body), sort_order: count });
   res.status(201).json(item);
 });
 router.put('/menu/sort', auth, adminOnly, async (req, res) => {
   const items = req.body?.data || req.body || [];
-  await Promise.all(items.map((item, i) => Menu.findByIdAndUpdate(item.id || item._id, { sort_order: i })));
+  const flat = [];
+  const walk = (arr) => arr.forEach((i) => { flat.push(i); if (Array.isArray(i.child)) walk(i.child); });
+  walk(Array.isArray(items) ? items : []);
+  await Promise.all(flat
+    .filter((item) => isValidMenuId(item.id || item._id))
+    .map((item, i) => Menu.findByIdAndUpdate(item.id || item._id, { sort_order: i })));
   res.json({ message: 'ok' });
 });
+// GET /menu/:id — the admin edit page loads a single item here
+router.get('/menu/:id', async (req, res) => {
+  if (!isValidMenuId(req.params.id)) return res.status(404).json({ message: 'Menu item not found' });
+  const item = await Menu.findById(req.params.id);
+  if (!item) return res.status(404).json({ message: 'Menu item not found' });
+  res.json(item);
+});
 router.put('/menu/:id', auth, adminOnly, async (req, res) => {
-  const item = await Menu.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  if (!isValidMenuId(req.params.id)) return res.status(404).json({ message: 'Menu item not found' });
+  const item = await Menu.findByIdAndUpdate(req.params.id, scrubMenuBody(req.body), { new: true });
   if (!item) return res.status(404).json({ message: 'Menu item not found' });
   res.json(item);
 });
 router.delete('/menu/:id', auth, adminOnly, async (req, res) => {
-  await Menu.findByIdAndDelete(req.params.id);
+  if (!isValidMenuId(req.params.id)) return res.status(404).json({ message: 'Menu item not found' });
+  const item = await Menu.findByIdAndDelete(req.params.id);
+  if (!item) return res.status(404).json({ message: 'Menu item not found' });
+  // Cascade: children of a deleted parent would become orphans no menu shows
+  await Menu.deleteMany({ parent_id: req.params.id });
   res.json({ message: 'ok' });
 });
 
@@ -492,5 +557,9 @@ router.put('/updateStoreProfile', ok);
 
 // product approve
 router.put('/approve/:id', ok);
+
+// exposed for unit tests
+router.buildMenuTree = buildMenuTree;
+router.scrubMenuBody = scrubMenuBody;
 
 module.exports = router;
