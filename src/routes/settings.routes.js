@@ -39,6 +39,13 @@ const DEFAULT_SETTING_VALUES = {
     { name: 'mercadopago', status: 1 },
   ],
   payment_methods_migrated_v2: true,
+  // Floating WhatsApp button on the storefront home page. Edited from the
+  // admin under Settings -> WhatsApp; off until a number is saved.
+  whatsapp: {
+    status: 0,
+    number: '',
+    message: '',
+  },
 };
 
 // GET /settings  — public (UI middleware calls this unauthenticated)
@@ -52,6 +59,11 @@ router.get('/', async (req, res) => {
     if (!merged.general?.default_currency?.code) {
       // Back-fill if the Setting doc existed but never had a currency set.
       merged.general = { ...(merged.general || {}), default_currency: DEFAULT_SETTING_VALUES.general.default_currency };
+      dirty = true;
+    }
+    if (!merged.whatsapp) {
+      // Back-fill for databases created before the WhatsApp button existed.
+      merged.whatsapp = { ...DEFAULT_SETTING_VALUES.whatsapp };
       dirty = true;
     }
     if (!Array.isArray(merged.payment_methods) || merged.payment_methods.length === 0) {
