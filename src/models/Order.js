@@ -3,6 +3,10 @@ const mongoose = require('mongoose');
 const orderProductSchema = new mongoose.Schema({
   product_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
   variation_id: { type: mongoose.Schema.Types.ObjectId, default: null },
+  // Snapshot of the chosen variant's display name (e.g. "S / Negro") taken at
+  // purchase time, so admin/order views can show size & color even if the
+  // product's variations are later edited or removed.
+  variation_name: { type: String, default: null },
   name: String,
   quantity: Number,
   price: Number,
