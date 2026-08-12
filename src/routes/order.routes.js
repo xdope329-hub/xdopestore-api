@@ -5,6 +5,14 @@ const Cart = require('../models/Cart');
 const OrderStatus = require('../models/OrderStatus');
 const auth = require('../middleware/auth');
 
+// Resolve the variant subdocument from the populated product (cart lines only
+// store variation_id) so the order can snapshot its name and price.
+function findCartVariation(product, variationId) {
+  if (!product || !variationId || !Array.isArray(product.variations)) return null;
+  const wanted = String(variationId);
+  return product.variations.find((v) => String(v._id || v.id) === wanted) || null;
+}
+
 function transformProduct(p) {
   const item = p.toJSON ? p.toJSON() : { ...p };
   const productDoc = item.product_id; // populated or ObjectId
@@ -19,7 +27,10 @@ function transformProduct(p) {
       single_price: item.price,
       quantity: item.quantity,
       subtotal: item.sub_total,
-      variation: null,
+      // Admin & storefront order views render pivot.variation.name when
+      // present (falling back to the product name), so include the product
+      // name for context: "Gato curioso — S / Negro".
+      variation: item.variation_name ? { name: `${item.name} — ${item.variation_name}` } : null,
       refund_status: item.refund_status || null,
     },
   };
@@ -78,14 +89,19 @@ router.post('/', auth, async (req, res) => {
   const cartItems = await Cart.find({ consumer_id: req.user._id }).populate('product_id');
   if (!cartItems.length) return res.status(422).json({ message: 'Cart is empty' });
 
-  const products = cartItems.map(i => ({
-    product_id: i.product_id._id,
-    variation_id: i.variation_id,
-    name: i.product_id.name,
-    quantity: i.quantity,
-    price: i.product_id.sale_price || i.product_id.price,
-    sub_total: i.sub_total,
-  }));
+  const products = cartItems.map(i => {
+    const variation = findCartVariation(i.product_id, i.variation_id);
+    return {
+      product_id: i.product_id._id,
+      variation_id: i.variation_id,
+      variation_name: variation ? variation.name : null,
+      name: i.product_id.name,
+      quantity: i.quantity,
+      // For variable products the unit price is the variant's, not the parent's.
+      price: variation ? (variation.sale_price ?? variation.price) : (i.product_id.sale_price || i.product_id.price),
+      sub_total: i.sub_total,
+    };
+  });
 
   const amount = cartItems.reduce((s, i) => s + i.sub_total, 0);
   const total = amount - coupon_total_discount + shipping_total;

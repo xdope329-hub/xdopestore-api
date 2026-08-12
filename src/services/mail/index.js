@@ -60,7 +60,7 @@ function orderItemsTable(order) {
   const rows = (order.products || [])
     .map(
       (p) => `<tr>
-        <td style="padding:8px 4px;border-bottom:1px solid #eee;">${p.name || ''}</td>
+        <td style="padding:8px 4px;border-bottom:1px solid #eee;">${p.name || ''}${p.variation_name ? ` (${p.variation_name})` : ''}</td>
         <td style="padding:8px 4px;border-bottom:1px solid #eee;text-align:center;">${p.quantity}</td>
         <td style="padding:8px 4px;border-bottom:1px solid #eee;text-align:right;">$${formatMoney(p.sub_total)}</td>
       </tr>`

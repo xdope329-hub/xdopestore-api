@@ -82,6 +82,15 @@ async function resolveAddress(addrInput, addrId, userId, { saveIfInline = false 
   return null;
 }
 
+// A cart line for a variable product stores only variation_id — resolve the
+// actual variant subdocument from the populated product so the order can
+// snapshot its name (size/color) and price.
+function findCartVariation(product, variationId) {
+  if (!product || !variationId || !Array.isArray(product.variations)) return null;
+  const wanted = String(variationId);
+  return product.variations.find((v) => String(v._id || v.id) === wanted) || null;
+}
+
 async function buildOrderFromCart(userId, body) {
   const { billing_address, billing_address_id, shipping_address, shipping_address_id, payment_method, coupon_total_discount = 0, shipping_total = 0, notes } = body;
   // Persist inline checkout addresses so the user sees them pre-selected next time.
@@ -90,14 +99,19 @@ async function buildOrderFromCart(userId, body) {
   const cartItems = await Cart.find({ consumer_id: userId }).populate('product_id');
   if (!cartItems.length) return null;
 
-  const products = cartItems.map(i => ({
-    product_id: i.product_id._id,
-    variation_id: i.variation_id || null,
-    name: i.product_id.name,
-    quantity: i.quantity,
-    price: i.product_id.sale_price || i.product_id.price,
-    sub_total: i.sub_total,
-  }));
+  const products = cartItems.map(i => {
+    const variation = findCartVariation(i.product_id, i.variation_id);
+    return {
+      product_id: i.product_id._id,
+      variation_id: i.variation_id || null,
+      variation_name: variation ? variation.name : null,
+      name: i.product_id.name,
+      quantity: i.quantity,
+      // For variable products the unit price is the variant's, not the parent's.
+      price: variation ? (variation.sale_price ?? variation.price) : (i.product_id.sale_price || i.product_id.price),
+      sub_total: i.sub_total,
+    };
+  });
 
   const amount = cartItems.reduce((s, i) => s + i.sub_total, 0);
   const total = amount - coupon_total_discount + shipping_total;
