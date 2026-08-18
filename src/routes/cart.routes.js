@@ -2,22 +2,10 @@ const router = require('express').Router();
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const auth = require('../middleware/auth');
+const { findVariation, unitPrice } = require('../utils/cartPricing');
 
 // A cart line for a variable product stores only variation_id — resolve the
 // full variant subdoc so the storefront can show its name/talla and price.
-function findVariation(product, variationId) {
-  if (!product || !variationId || !Array.isArray(product.variations)) return null;
-  const wanted = String(variationId);
-  return product.variations.find((v) => String(v._id || v.id) === wanted) || null;
-}
-
-// The sellable price of a cart line: the variant's when one is chosen,
-// otherwise the product's.
-function unitPrice(product, variation) {
-  if (variation) return Number(variation.sale_price ?? variation.price) || Number(variation.price) || 0;
-  return Number(product?.sale_price ?? product?.price) || Number(product?.price) || 0;
-}
-
 async function getCartResponse(userId) {
   const items = await Cart.find({ consumer_id: userId })
     .populate({

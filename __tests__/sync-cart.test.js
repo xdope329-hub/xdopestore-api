@@ -14,6 +14,7 @@ describe('POST /sync/cart', () => {
     findOne: jest.fn(),
     create: jest.fn(),
     find: jest.fn(),
+    deleteMany: jest.fn(),
   };
   const Product = { findById: jest.fn() };
 
@@ -30,6 +31,7 @@ describe('POST /sync/cart', () => {
     Cart.findOne.mockReset();
     Cart.create.mockReset();
     Cart.find.mockReset();
+    Cart.deleteMany.mockReset();
     Product.findById.mockReset();
 
     // Return a viable product for every lookup the route may do
@@ -102,6 +104,56 @@ describe('POST /sync/cart', () => {
     expect(Cart.create).not.toHaveBeenCalled();
   });
 
+  test('uses the selected variation price when synchronizing a guest cart', async () => {
+    Product.findById.mockResolvedValue({
+      _id: 'p-variable',
+      price: 200,
+      sale_price: 150,
+      variations: [
+        { _id: 'variation-red', price: 120, sale_price: 80 },
+      ],
+    });
+    Cart.findOne.mockResolvedValue(null);
+
+    const res = await request(app).post('/sync/cart').send({
+      cart: [{ product_id: 'p-variable', variation_id: 'variation-red', quantity: 2 }],
+    });
+
+    expect(res.status).toBe(200);
+    expect(Cart.create).toHaveBeenCalledWith(expect.objectContaining({
+      product_id: 'p-variable',
+      variation_id: 'variation-red',
+      quantity: 2,
+      sub_total: 160,
+    }));
+  });
+
+  test('uses the selected variation price when replacing a cart variation', async () => {
+    Product.findById.mockResolvedValue({
+      _id: 'p-variable',
+      price: 200,
+      sale_price: 150,
+      variations: [
+        { _id: 'variation-blue', price: 110, sale_price: 75 },
+      ],
+    });
+    Cart.findOne.mockResolvedValue(null);
+
+    const res = await request(app).post('/replace/cart').send({
+      product_id: 'p-variable',
+      variation_id: 'variation-blue',
+      quantity: 3,
+    });
+
+    expect(res.status).toBe(200);
+    expect(Cart.create).toHaveBeenCalledWith(expect.objectContaining({
+      product_id: 'p-variable',
+      variation_id: 'variation-blue',
+      quantity: 3,
+      sub_total: 225,
+    }));
+  });
+
   test('skips items whose product no longer exists rather than throwing', async () => {
     Product.findById.mockResolvedValue(null);
 
@@ -117,5 +169,15 @@ describe('POST /sync/cart', () => {
     const res = await request(app).post('/sync/cart').send({});
     expect(res.status).toBe(200);
     expect(Cart.create).not.toHaveBeenCalled();
+  });
+
+  test('clears every cart line for the signed-in user', async () => {
+    Cart.deleteMany.mockResolvedValue({ deletedCount: 3 });
+
+    const res = await request(app).delete('/clear/cart');
+
+    expect(res.status).toBe(200);
+    expect(Cart.deleteMany).toHaveBeenCalledWith({ consumer_id: '64b0000000000000000000a1' });
+    expect(res.body).toEqual(expect.objectContaining({ items: [], total: 0 }));
   });
 });
