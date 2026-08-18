@@ -2,6 +2,7 @@ const router = require('express').Router();
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const auth = require('../middleware/auth');
+const { findVariation, unitPrice } = require('../utils/cartPricing');
 
 async function getCartItems(userId) {
   const items = await Cart.find({ consumer_id: userId }).populate({
@@ -13,6 +14,7 @@ async function getCartItems(userId) {
     const product = obj.product_id || {};
     obj.product = { ...product, product_thumbnail: product.product_thumbnail_id || null, sale_price: product.sale_price || product.price };
     obj.product_id = product._id || product.id;
+    obj.variation = findVariation(product, obj.variation_id);
     return obj;
   });
 }
@@ -28,7 +30,7 @@ router.post('/sync/cart', auth, async (req, res) => {
   for (const item of payload) {
     const product = await Product.findById(item.product_id);
     if (!product) continue;
-    const price = product.sale_price || product.price;
+    const price = unitPrice(product, findVariation(product, item.variation_id));
     const existing = await Cart.findOne({ consumer_id: req.user._id, product_id: item.product_id, variation_id: item.variation_id || null });
     if (existing) {
       existing.quantity = Math.max(existing.quantity, item.quantity);
@@ -48,7 +50,7 @@ async function replaceCartHandler(req, res) {
   const { product_id, variation_id, quantity = 1, id } = req.body;
   const product = await Product.findById(product_id);
   if (!product) return res.status(404).json({ message: 'Product not found' });
-  const price = product.sale_price || product.price;
+  const price = unitPrice(product, findVariation(product, variation_id));
 
   // Remove old item if `id` provided
   if (id) await Cart.findByIdAndDelete(id);
