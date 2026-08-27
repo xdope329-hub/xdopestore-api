@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const Attachment = require('../models/Attachment');
 const auth = require('../middleware/auth');
-const { multer, cloudinary } = require('../middleware/upload');
+const { multer, cloudinary, ensureCloudinaryConfigured } = require('../middleware/upload');
 const { getUsedAttachmentIds } = require('../utils/attachmentUsage');
 
 const isAttachmentUsed = ({ usedIds, usedUrls }, att) =>
@@ -47,10 +47,32 @@ router.get('/', auth, async (req, res) => {
   res.json({ current_page: page, last_page: Math.ceil(total / limit), total, per_page: limit, data });
 });
 
+// Cloudinary's destroy() does NOT accept resource_type 'auto' — it must be
+// 'image', 'video' or 'raw', so we derive it from the stored mime type.
+function cloudinaryResourceType(mimeType) {
+  if (!mimeType) return 'image';
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('video/')) return 'video';
+  return 'raw'; // pdf, zip, etc.
+}
+
 async function deleteAttachment(att) {
-  try {
-    await cloudinary.uploader.destroy(att.path, { resource_type: 'auto' });
-  } catch (_) { /* ignore if already gone */ }
+  if (att.path) {
+    try {
+      ensureCloudinaryConfigured();
+      const result = await cloudinary.uploader.destroy(att.path, {
+        resource_type: cloudinaryResourceType(att.mime_type),
+        invalidate: true,
+      });
+      if (result?.result && result.result !== 'ok' && result.result !== 'not found') {
+        console.warn(`[attachment] Cloudinary destroy '${att.path}': ${result.result}`);
+      }
+    } catch (err) {
+      // The DB record is still removed so the media library stays usable;
+      // the orphaned Cloudinary file can be cleaned up manually.
+      console.warn(`[attachment] Cloudinary destroy failed for '${att.path}': ${err.message}`);
+    }
+  }
   await att.deleteOne();
 }
 

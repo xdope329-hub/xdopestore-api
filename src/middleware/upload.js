@@ -57,4 +57,4 @@ const upload = new Proxy({}, {
   },
 });
 
-module.exports = { multer: upload, cloudinary };
+module.exports = { multer: upload, cloudinary, ensureCloudinaryConfigured };
