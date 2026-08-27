@@ -74,6 +74,7 @@ app.use('/role', require('./src/routes/role.routes'));
 app.use('/coupon', require('./src/routes/coupon.routes'));
 app.use('/shipping', require('./src/routes/shipping.routes'));
 app.use('/blog', require('./src/routes/blog.routes'));
+app.use('/page', require('./src/routes/page.routes'));
 app.use('/review', require('./src/routes/review.routes'));
 app.use('/wishlist', require('./src/routes/wishlist.routes'));
 app.use('/compare', require('./src/routes/compare.routes'));
