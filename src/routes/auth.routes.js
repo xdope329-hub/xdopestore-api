@@ -37,7 +37,12 @@ async function issueSession(user, req) {
 }
 
 // POST /login
-router.post('/login', loginLimiter, verifyRecaptcha, async (req, res) => {
+// NOTE: /login is protected by the rate limiter (10 attempts / 15 min per
+// IP) but intentionally NOT by reCAPTCHA: the admin dashboard's login form
+// has no captcha widget, so enforcing it here locks administrators out on
+// any deployment where RECAPTCHA_SECRET_KEY is set. Register and password
+// reset keep captcha — those are the bot-abuse surfaces.
+router.post('/login', loginLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(422).json({ message: 'Email and password required' });
 
