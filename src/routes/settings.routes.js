@@ -46,6 +46,15 @@ const DEFAULT_SETTING_VALUES = {
     number: '',
     message: '',
   },
+  // Site-wide social profiles (contact page, footer, etc.). Lives in
+  // Settings — NOT in theme options — so switching themes or footer styles
+  // never affects these links. Edited under admin Settings -> Social Networks.
+  social: {
+    facebook: '',
+    instagram: '',
+    twitter: '',
+    pinterest: '',
+  },
 };
 
 // GET /settings  — public (UI middleware calls this unauthenticated)
@@ -64,6 +73,21 @@ router.get('/', async (req, res) => {
     if (!merged.whatsapp) {
       // Back-fill for databases created before the WhatsApp button existed.
       merged.whatsapp = { ...DEFAULT_SETTING_VALUES.whatsapp };
+      dirty = true;
+    }
+    if (!merged.social) {
+      // Back-fill for databases created before social settings existed.
+      // Seed from any URLs already saved in theme options' footer so an
+      // existing store keeps its links without retyping them.
+      merged.social = { ...DEFAULT_SETTING_VALUES.social };
+      try {
+        const ThemeOption = require('../models/ThemeOption');
+        const to = await ThemeOption.findOne();
+        const f = to?.options?.footer || {};
+        ['facebook', 'instagram', 'twitter', 'pinterest'].forEach((k) => {
+          if (f[k]) merged.social[k] = f[k];
+        });
+      } catch (_) { /* theme options unavailable — keep empty defaults */ }
       dirty = true;
     }
     if (!Array.isArray(merged.payment_methods) || merged.payment_methods.length === 0) {
