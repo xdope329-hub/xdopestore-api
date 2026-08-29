@@ -35,7 +35,16 @@ router.post('/', auth, adminOnly, async (req, res) => {
 });
 
 router.put('/:id', auth, adminOnly, async (req, res) => {
-  const coupon = await Coupon.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  const update = { ...req.body };
+  // Al desactivar la expiración desde el admin, elimina las fechas viejas
+  // para que no sigan venciendo el cupón silenciosamente.
+  const ops = { $set: update };
+  if (update.is_expired === false || update.is_expired === 0) {
+    delete update.start_date;
+    delete update.end_date;
+    ops.$unset = { start_date: 1, end_date: 1 };
+  }
+  const coupon = await Coupon.findByIdAndUpdate(req.params.id, ops, { new: true });
   res.json(coupon);
 });
 

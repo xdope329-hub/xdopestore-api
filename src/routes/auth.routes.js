@@ -83,7 +83,9 @@ router.post('/register', registerLimiter, verifyRecaptcha, async (req, res) => {
 // Captcha is required here too (when RECAPTCHA_SECRET_KEY is set): the store
 // demands the captcha be solved before ANY login path, Google included.
 // The ID token is additionally verified server-side against GOOGLE_CLIENT_ID.
-router.post('/login/google', loginLimiter, verifyRecaptcha, async (req, res) => {
+// Google sign-in is NOT captcha-gated (standard practice): the signed Google
+// credential is itself the anti-bot check, and the rate limiter still applies.
+router.post('/login/google', loginLimiter, async (req, res) => {
   const { credential } = req.body || {};
   if (!credential) return res.status(422).json({ message: 'Google credential required' });
 

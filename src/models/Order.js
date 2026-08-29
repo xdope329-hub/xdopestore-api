@@ -40,6 +40,7 @@ const orderSchema = new mongoose.Schema({
   tax_total: { type: Number, default: 0 },
   shipping_total: { type: Number, default: 0 },
   coupon_total_discount: { type: Number, default: 0 },
+  coupon_code: { type: String, default: null },
   wallet_balance: { type: Number, default: 0 },
   points_amount: { type: Number, default: 0 },
   total: Number,

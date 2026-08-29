@@ -92,7 +92,8 @@ function findCartVariation(product, variationId) {
 }
 
 async function buildOrderFromCart(userId, body) {
-  const { billing_address, billing_address_id, shipping_address, shipping_address_id, payment_method, coupon_total_discount = 0, shipping_total = 0, notes } = body;
+  const { billing_address, billing_address_id, shipping_address, shipping_address_id, payment_method, notes } = body;
+  const couponCode = body.coupon_code || body.coupon || '';
   // Persist inline checkout addresses so the user sees them pre-selected next time.
   const resolvedBilling = await resolveAddress(billing_address, billing_address_id, userId, { saveIfInline: true });
   const resolvedShipping = await resolveAddress(shipping_address, shipping_address_id || billing_address_id, userId, { saveIfInline: true });
@@ -114,10 +115,34 @@ async function buildOrderFromCart(userId, body) {
   });
 
   const amount = cartItems.reduce((s, i) => s + i.sub_total, 0);
+
+  // Cupón: se revalida y calcula SIEMPRE en el servidor (mismas reglas que la
+  // vista previa) — nunca se confía en un descuento enviado por el cliente.
+  let coupon_total_discount = 0;
+  let couponFreeShipping = false;
+  let coupon_code = null;
+  if (couponCode) {
+    const { validateCoupon } = require('../utils/couponValidation');
+    // Si el cupón dejó de ser válido entre la vista previa y el pago, el
+    // error 422 detiene la orden y el cliente ve el motivo.
+    const result = await validateCoupon(couponCode, { userId, subtotal: amount });
+    coupon_total_discount = result.discount;
+    couponFreeShipping = result.free_shipping;
+    coupon_code = result.coupon.code;
+  }
+
+  // El envío SIEMPRE se calcula en el servidor a partir de la ciudad de la
+  // dirección de entrega — nunca se confía en un valor enviado por el
+  // cliente (evita manipular el total desde el navegador).
+  const { quoteShipping } = require('../utils/shippingQuote');
+  const shipCity = resolvedShipping?.city || resolvedBilling?.city || '';
+  const quote = await quoteShipping(shipCity, amount);
+  const shipping_total = couponFreeShipping ? 0 : quote.amount;
+
   const total = amount - coupon_total_discount + shipping_total;
   const pendingStatus = await OrderStatus.findOne({ slug: 'pending' });
 
-  return { products, amount, total, pendingStatus, billing_address: resolvedBilling, shipping_address: resolvedShipping, payment_method, coupon_total_discount, shipping_total, notes };
+  return { products, amount, total, pendingStatus, billing_address: resolvedBilling, shipping_address: resolvedShipping, payment_method, coupon_total_discount, coupon_code, shipping_total, notes };
 }
 
 // ── POST /payment/initialize ───────────────────────────────────────────────────
@@ -125,11 +150,17 @@ async function buildOrderFromCart(userId, body) {
 // COD: retorna { success: true, order_id }
 // MP:  retorna { redirect_url, order_id }
 router.post('/initialize', auth, async (req, res) => {
-  const built = await buildOrderFromCart(req.user._id, req.body);
+  let built;
+  try {
+    built = await buildOrderFromCart(req.user._id, req.body);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    throw err;
+  }
   if (!built) return res.status(422).json({ message: 'El carrito está vacío' });
 
   const { products, amount, total, pendingStatus, billing_address, shipping_address,
-          payment_method, coupon_total_discount, shipping_total, notes } = built;
+          payment_method, coupon_total_discount, coupon_code, shipping_total, notes } = built;
 
   const order = await Order.create({
     consumer_id: req.user._id,
@@ -140,12 +171,19 @@ router.post('/initialize', auth, async (req, res) => {
     payment_status: 'pending',
     amount,
     coupon_total_discount,
+    coupon_code,
     shipping_total,
     total,
     status_id: pendingStatus?._id,
     notes,
     payment_initiated_at: new Date(),
   });
+
+  // Contabiliza el uso del cupón (para el límite total de usos).
+  if (coupon_code) {
+    const Coupon = require('../models/Coupon');
+    await Coupon.updateOne({ code: coupon_code }, { $inc: { used: 1 } });
+  }
 
   let gatewayResult;
   try {

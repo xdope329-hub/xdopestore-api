@@ -162,6 +162,11 @@ async function seedProd() {
   await Shipping.create({
     status: 1,
     country: 'Colombia', country_id: 48,
+    zones: [
+      { zone: 1, name: 'Zona 1 — Ciudades principales', amount: 9900 },
+      { zone: 2, name: 'Zona 2 — Resto del país', amount: 14900 },
+    ],
+    free_shipping_threshold: 200000,
     shipping_rules: [
       { name: 'Envío Estándar (5–7 días hábiles)', type: 'flat', amount: 9900  },
       { name: 'Envío Express (2–3 días hábiles)',  type: 'flat', amount: 19900 },
