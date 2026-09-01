@@ -44,7 +44,12 @@ describe('shipping zones', () => {
   });
 
   describe('quoteShipping', () => {
-    const { quoteShipping } = require('../src/utils/shippingQuote');
+    // Requerir DESPUÉS de que el beforeAll externo registre los mocks:
+    // jest.doMock solo afecta requires posteriores. Requerirlo al definir el
+    // describe traía el modelo Shipping REAL → 10s de buffering de mongoose
+    // esperando una base de datos que no existe en los tests.
+    let quoteShipping;
+    beforeAll(() => { ({ quoteShipping } = require('../src/utils/shippingQuote')); });
 
     test('ciudad principal → Zona 1', async () => {
       const q = await quoteShipping('Bogotá', 100000);

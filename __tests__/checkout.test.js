@@ -100,7 +100,7 @@ describe('POST /checkout', () => {
     const res = await request(app).post('/checkout').send({ coupon_code: 'NOPE' });
 
     expect(res.status).toBe(422);
-    expect(res.body.message).toMatch(/invalid coupon/i);
+    expect(res.body.message).toMatch(/Cupón inválido/i);
   });
 
   test('rejects a coupon whose min_spend exceeds the subtotal', async () => {
@@ -116,6 +116,6 @@ describe('POST /checkout', () => {
     const res = await request(app).post('/checkout').send({ coupon_code: 'BIG100' });
 
     expect(res.status).toBe(422);
-    expect(res.body.message).toMatch(/Minimum spend/);
+    expect(res.body.message).toMatch(/Compra mínima/);
   });
 });
