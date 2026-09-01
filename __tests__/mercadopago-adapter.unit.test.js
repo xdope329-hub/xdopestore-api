@@ -26,6 +26,9 @@ const MercadoPagoAdapter = require('../src/services/payment/adapters/MercadoPago
 const ORDER = {
   _id: 'order123',
   products: [{ product_id: 'p1', name: 'Producto', quantity: 1, price: 1000 }],
+  coupon_total_discount: 0,
+  shipping_total: 0,
+  total: 1000,
 };
 
 const ENV_KEYS = ['STORE_URL', 'BASE_URL', 'MP_ACCESS_TOKEN', 'MP_SANDBOX'];
@@ -72,5 +75,42 @@ describe('MercadoPagoAdapter.initializePayment', () => {
 
     const result = await new MercadoPagoAdapter().initializePayment(ORDER);
     expect(result.redirect_url).toBe('https://mp/sandbox');
+  });
+});
+
+describe('MercadoPagoAdapter — el monto cobrado es exactamente order.total', () => {
+  const mpTotal = (b) => b.items.reduce((s, i) => s + i.unit_price * i.quantity, 0) + (b.shipments?.cost || 0);
+
+  beforeEach(() => {
+    process.env.STORE_URL = 'https://xdope.com.co';
+    process.env.BASE_URL = 'https://api.xdope.com.co';
+  });
+
+  test('con envío: shipments.cost suma al total', async () => {
+    const order = { _id: 'o2', products: [{ product_id: 'p1', name: 'Hoodie', price: 150000, quantity: 1 }], coupon_total_discount: 0, shipping_total: 9900, total: 159900 };
+    await new MercadoPagoAdapter().initializePayment(order);
+    expect(capturedBody.shipments).toEqual({ cost: 9900, mode: 'not_specified' });
+    expect(mpTotal(capturedBody)).toBe(159900);
+  });
+
+  test('con cupón: ítem consolidado con el descuento ya aplicado', async () => {
+    const order = { _id: 'o3', products: [{ product_id: 'p1', name: 'Hoodie', price: 150000, quantity: 1 }], coupon_code: 'HOODIE10', coupon_total_discount: 15000, shipping_total: 9900, total: 144900 };
+    await new MercadoPagoAdapter().initializePayment(order);
+    expect(capturedBody.items).toHaveLength(1);
+    expect(capturedBody.items[0].unit_price).toBe(135000);
+    expect(capturedBody.items[0].title).toContain('HOODIE10');
+    expect(mpTotal(capturedBody)).toBe(144900);
+  });
+
+  test('sin cupón: productos itemizados tal cual', async () => {
+    const order = { _id: 'o4', products: [{ product_id: 'p1', name: 'Hoodie A', price: 120000, quantity: 2 }, { product_id: 'p2', name: 'Hoodie B', price: 90000, quantity: 1 }], coupon_total_discount: 0, shipping_total: 0, total: 330000 };
+    await new MercadoPagoAdapter().initializePayment(order);
+    expect(capturedBody.items).toHaveLength(2);
+    expect(mpTotal(capturedBody)).toBe(330000);
+  });
+
+  test('guardia: un total inconsistente bloquea el pago', async () => {
+    const order = { _id: 'o5', products: [{ product_id: 'p1', name: 'Hoodie', price: 150000, quantity: 1 }], coupon_total_discount: 0, shipping_total: 9900, total: 999999 };
+    await expect(new MercadoPagoAdapter().initializePayment(order)).rejects.toThrow(/inconsistente/);
   });
 });

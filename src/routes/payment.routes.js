@@ -4,6 +4,7 @@ const Cart = require('../models/Cart');
 const OrderStatus = require('../models/OrderStatus');
 const Address = require('../models/Address');
 const auth = require('../middleware/auth');
+const optionalAuth = require('../middleware/optionalAuth');
 const { getGateway } = require('../services/payment/PaymentFactory');
 const { findCountry, findState } = require('../data/countries');
 
@@ -95,9 +96,18 @@ async function buildOrderFromCart(userId, body) {
   const { billing_address, billing_address_id, shipping_address, shipping_address_id, payment_method, notes } = body;
   const couponCode = body.coupon_code || body.coupon || '';
   // Persist inline checkout addresses so the user sees them pre-selected next time.
-  const resolvedBilling = await resolveAddress(billing_address, billing_address_id, userId, { saveIfInline: true });
-  const resolvedShipping = await resolveAddress(shipping_address, shipping_address_id || billing_address_id, userId, { saveIfInline: true });
-  const cartItems = await Cart.find({ consumer_id: userId }).populate('product_id');
+  const resolvedBilling = await resolveAddress(billing_address, billing_address_id, userId, { saveIfInline: Boolean(userId) });
+  const resolvedShipping = await resolveAddress(shipping_address, shipping_address_id || billing_address_id, userId, { saveIfInline: Boolean(userId) });
+
+  // Usuarios: carrito del servidor. Invitados: se reconstruye desde los ids
+  // enviados, con precios SIEMPRE tomados de la base de datos.
+  let cartItems;
+  if (userId) {
+    cartItems = await Cart.find({ consumer_id: userId }).populate('product_id');
+  } else {
+    const { buildGuestCartItems } = require('../utils/guestCart');
+    cartItems = await buildGuestCartItems(body.products);
+  }
   if (!cartItems.length) return null;
 
   const products = cartItems.map(i => {
@@ -125,7 +135,7 @@ async function buildOrderFromCart(userId, body) {
     const { validateCoupon } = require('../utils/couponValidation');
     // Si el cupón dejó de ser válido entre la vista previa y el pago, el
     // error 422 detiene la orden y el cliente ve el motivo.
-    const result = await validateCoupon(couponCode, { userId, subtotal: amount });
+    const result = await validateCoupon(couponCode, { userId: userId || null, subtotal: amount });
     coupon_total_discount = result.discount;
     couponFreeShipping = result.free_shipping;
     coupon_code = result.coupon.code;
@@ -149,10 +159,18 @@ async function buildOrderFromCart(userId, body) {
 // Crea la orden y delega al gateway correspondiente.
 // COD: retorna { success: true, order_id }
 // MP:  retorna { redirect_url, order_id }
-router.post('/initialize', auth, async (req, res) => {
+router.post('/initialize', optionalAuth, async (req, res) => {
+  // Checkout de invitados: sin sesión se exigen nombre y correo para poder
+  // confirmar el pedido y enviarle el número de orden.
+  const isGuest = !req.user;
+  if (isGuest) {
+    const { name, email } = req.body || {};
+    if (!name || !email) return res.status(422).json({ message: 'Nombre y correo son obligatorios para comprar como invitado' });
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(email))) return res.status(422).json({ message: 'Correo inválido' });
+  }
   let built;
   try {
-    built = await buildOrderFromCart(req.user._id, req.body);
+    built = await buildOrderFromCart(req.user ? req.user._id : null, req.body);
   } catch (err) {
     if (err.status) return res.status(err.status).json({ message: err.message });
     throw err;
@@ -163,7 +181,10 @@ router.post('/initialize', auth, async (req, res) => {
           payment_method, coupon_total_discount, coupon_code, shipping_total, notes } = built;
 
   const order = await Order.create({
-    consumer_id: req.user._id,
+    consumer_id: req.user ? req.user._id : null,
+    is_guest: isGuest,
+    guest_name: isGuest ? String(req.body.name).trim() : null,
+    guest_email: isGuest ? String(req.body.email).trim().toLowerCase() : null,
     products,
     billing_address,
     shipping_address,
@@ -195,8 +216,9 @@ router.post('/initialize', auth, async (req, res) => {
     return res.status(502).json({ message: 'Error al inicializar el pago', detail: err.message });
   }
 
-  // Para COD: limpiar carrito inmediatamente
-  if (order.payment_method === 'cod') {
+  // Para COD: limpiar carrito inmediatamente (los invitados no tienen
+  // carrito en el servidor — el suyo es local y lo limpia el frontend).
+  if (order.payment_method === 'cod' && req.user) {
     await Cart.deleteMany({ consumer_id: req.user._id });
   }
 
@@ -231,7 +253,7 @@ router.post('/webhook', async (req, res) => {
       // Avanzar la orden a 'processing' y limpiar carrito
       const processingStatus = await OrderStatus.findOne({ slug: 'processing' });
       if (processingStatus) update.status_id = processingStatus._id;
-      await Cart.deleteMany({ consumer_id: order.consumer_id });
+      if (order.consumer_id) await Cart.deleteMany({ consumer_id: order.consumer_id });
     } else if (status === 'rejected' || status === 'cancelled') {
       update.payment_status = 'failed';
       update.payment_error = `Pago ${status} por la pasarela`;
@@ -245,10 +267,13 @@ router.post('/webhook', async (req, res) => {
 
 // ── GET /payment/verify/:orderId ───────────────────────────────────────────────
 // El frontend llama este endpoint desde la back_url de MP para confirmar el estado.
-router.get('/verify/:orderId', auth, async (req, res) => {
+router.get('/verify/:orderId', optionalAuth, async (req, res) => {
   const order = await Order.findById(req.params.orderId).populate('status_id');
   if (!order) return res.status(404).json({ message: 'Orden no encontrada' });
-  if (order.consumer_id.toString() !== req.user._id.toString())
+  // Órdenes de usuario: solo su dueño puede verificarlas. Órdenes de
+  // invitado (consumer_id null): el id de la orden — no adivinable — es la
+  // credencial, igual que el enlace de seguimiento del correo.
+  if (order.consumer_id && (!req.user || order.consumer_id.toString() !== req.user._id.toString()))
     return res.status(403).json({ message: 'No autorizado' });
 
   let gatewayStatus = order.payment_status;
@@ -271,7 +296,7 @@ router.get('/verify/:orderId', auth, async (req, res) => {
         payment_completed_at: new Date(),
         ...(processingStatus ? { status_id: processingStatus._id } : {}),
       });
-      await Cart.deleteMany({ consumer_id: order.consumer_id });
+      if (order.consumer_id) await Cart.deleteMany({ consumer_id: order.consumer_id });
     }
   } catch (err) {
     console.error('[payment/verify] error:', err.message);

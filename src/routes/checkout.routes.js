@@ -2,9 +2,10 @@ const router = require('express').Router();
 const Cart = require('../models/Cart');
 const Coupon = require('../models/Coupon');
 const auth = require('../middleware/auth');
+const optionalAuth = require('../middleware/optionalAuth');
 
 // POST /checkout  — returns totals summary (does not create order)
-router.post('/', auth, async (req, res) => {
+router.post('/', optionalAuth, async (req, res) => {
   const { coupon_code, shipping_id } = req.body;
   // Ciudad de entrega: enviada directamente (invitados) o resuelta desde la
   // dirección de envío guardada (usuarios con sesión).
@@ -13,11 +14,19 @@ router.post('/', auth, async (req, res) => {
   if (!city && addressId) {
     try {
       const Address = require('../models/Address');
-      const addr = await Address.findOne({ _id: addressId, user_id: req.user._id });
+      const addr = req.user ? await Address.findOne({ _id: addressId, user_id: req.user._id }) : null;
       if (addr?.city) city = addr.city;
     } catch (_) { /* id inválido — sin ciudad, envío 0 en la vista previa */ }
   }
-  const cartItems = await Cart.find({ consumer_id: req.user._id }).populate('product_id');
+  // Usuarios: carrito del servidor. Invitados: reconstruido desde los ids
+  // enviados con precios de la base de datos.
+  let cartItems;
+  if (req.user) {
+    cartItems = await Cart.find({ consumer_id: req.user._id }).populate('product_id');
+  } else {
+    const { buildGuestCartItems } = require('../utils/guestCart');
+    cartItems = await buildGuestCartItems(req.body.products);
+  }
   if (!cartItems.length) return res.status(422).json({ message: 'Cart is empty' });
 
   let subtotal = cartItems.reduce((sum, i) => sum + i.sub_total, 0);
@@ -28,7 +37,7 @@ router.post('/', auth, async (req, res) => {
   if (coupon_code) {
     const { validateCoupon } = require('../utils/couponValidation');
     try {
-      const result = await validateCoupon(coupon_code, { userId: req.user._id, subtotal });
+      const result = await validateCoupon(coupon_code, { userId: req.user ? req.user._id : null, subtotal });
       discount = result.discount;
       couponFreeShipping = result.free_shipping;
       appliedCoupon = { code: result.coupon.code, type: result.coupon.type, amount: result.coupon.amount, title: result.coupon.title };
