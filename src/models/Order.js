@@ -31,6 +31,10 @@ const addressSubSchema = new mongoose.Schema({
 const orderSchema = new mongoose.Schema({
   order_number: { type: Number, unique: true },
   consumer_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  // Pedidos de invitado (checkout sin cuenta)
+  is_guest: { type: Boolean, default: false },
+  guest_name: { type: String, default: null },
+  guest_email: { type: String, default: null },
   products: [orderProductSchema],
   billing_address: addressSubSchema,
   shipping_address: addressSubSchema,

@@ -31,14 +31,48 @@ class MercadoPagoAdapter extends PaymentGateway {
     const baseUrl = process.env.BASE_URL || '';
     const isLocal = (u) => /localhost|127\.0\.0\.1/i.test(u);
 
-    const body = {
-      items: order.products.map(p => ({
+    // ── Items: el total cobrado por MP debe ser EXACTAMENTE order.total ──────
+    // order.total = productos − cupón + envío (calculado en el servidor).
+    // Sin cupón: se envían los productos itemizados. Con cupón: MP no acepta
+    // ítems negativos, así que se consolida en un solo ítem con el valor ya
+    // descontado (el detalle queda en la orden y en el correo de la tienda).
+    const discount = Number(order.coupon_total_discount || 0);
+    const shippingCost = Number(order.shipping_total || 0);
+    const productsTotal = order.products.reduce((s, p) => s + Number(p.price) * Number(p.quantity), 0);
+
+    let items;
+    if (discount > 0) {
+      const itemCount = order.products.reduce((s, p) => s + Number(p.quantity), 0);
+      items = [{
+        id: String(order._id),
+        title: `Pedido XDOPE (${itemCount} producto${itemCount === 1 ? '' : 's'}${order.coupon_code ? `, cupón ${order.coupon_code}` : ''})`,
+        quantity: 1,
+        unit_price: productsTotal - discount,
+        currency_id: 'COP',
+      }];
+    } else {
+      items = order.products.map(p => ({
         id: String(p.product_id),
         title: p.name,
         quantity: Number(p.quantity),
         unit_price: Number(p.price),
         currency_id: 'COP',
-      })),
+      }));
+    }
+
+    // Verificación de consistencia: ítems + envío == total de la orden.
+    // Si algún cambio futuro rompe la fórmula, es mejor frenar aquí que
+    // cobrar un valor distinto al mostrado en el checkout.
+    const itemsTotal = items.reduce((s, it) => s + it.unit_price * it.quantity, 0);
+    if (Math.round(itemsTotal + shippingCost) !== Math.round(Number(order.total))) {
+      throw new Error(`Preferencia MP inconsistente: items ${itemsTotal} + envío ${shippingCost} != total ${order.total}`);
+    }
+
+    const body = {
+      items,
+      // Envío como costo de shipment — MP lo muestra como línea de envío y
+      // lo suma al total cobrado.
+      ...(shippingCost > 0 ? { shipments: { cost: shippingCost, mode: 'not_specified' } } : {}),
       external_reference: String(order._id),
       back_urls: {
         success: `${storeUrl}/order/success?id=${order._id}`,

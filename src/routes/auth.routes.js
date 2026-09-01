@@ -76,6 +76,16 @@ router.post('/register', registerLimiter, verifyRecaptcha, async (req, res) => {
   const user = await User.create({ name, email: normalized, password, phone, country_code, role: consumerRole?._id });
   const populated = await User.findById(user._id).populate('role');
   const session = await issueSession(user, req);
+  // Adopción de pedidos de invitado: si este correo compró sin cuenta,
+  // sus órdenes pasan a la cuenta recién creada (aparecen en "Mis pedidos").
+  try {
+    const Order = require('../models/Order');
+    await Order.updateMany(
+      { guest_email: normalized, consumer_id: null },
+      { $set: { consumer_id: user._id, is_guest: false } }
+    );
+  } catch (e) { console.warn('[register] no se pudieron adoptar pedidos de invitado:', e.message); }
+
   res.status(201).json({ ...session, data: populated });
 });
 
