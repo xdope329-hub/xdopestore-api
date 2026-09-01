@@ -9,6 +9,10 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
+    "dev:qa": "nodemon --exec \"node -r dotenv/config server.js dotenv_config_path=.env.qa\"",
+    "start:qa": "node -r dotenv/config server.js dotenv_config_path=.env.qa",
+    "sync:qa": "node seed/sync-qa.js",
+    "seed:qa": "node -r dotenv/config seed/seed.js dotenv_config_path=.env.qa --force",
     "seed": "node seed/seed.js",
     "test": "jest --runInBand --detectOpenHandles --forceExit",
     "reset": "node seed/reset.js",

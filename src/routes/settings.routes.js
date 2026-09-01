@@ -46,6 +46,19 @@ const DEFAULT_SETTING_VALUES = {
     number: '',
     message: '',
   },
+  // Cinta de anuncios (announcement bar): la tira que se desplaza en la
+  // parte superior de la tienda (estilo koaj.co). Se administra desde el
+  // admin en Configuración -> Cinta de anuncios. `bg_color` vacío = usa el
+  // color primario del tema. `speed` = segundos que tarda un ciclo completo.
+  announcement_bar: {
+    status: 0,
+    bg_color: '',
+    text_color: '#ffffff',
+    speed: 30,
+    messages: [
+      { text: 'Envío gratis después de $200.000 en compras', status: 1 },
+    ],
+  },
   // Site-wide social profiles (contact page, footer, etc.). Lives in
   // Settings — NOT in theme options — so switching themes or footer styles
   // never affects these links. Edited under admin Settings -> Social Networks.
@@ -88,6 +101,11 @@ router.get('/', async (req, res) => {
           if (f[k]) merged.social[k] = f[k];
         });
       } catch (_) { /* theme options unavailable — keep empty defaults */ }
+      dirty = true;
+    }
+    if (!merged.announcement_bar) {
+      // Back-fill for databases created before the announcement bar existed.
+      merged.announcement_bar = JSON.parse(JSON.stringify(DEFAULT_SETTING_VALUES.announcement_bar));
       dirty = true;
     }
     if (!Array.isArray(merged.payment_methods) || merged.payment_methods.length === 0) {
