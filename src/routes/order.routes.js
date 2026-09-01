@@ -70,7 +70,23 @@ router.get('/', auth, async (req, res) => {
   const limit = parseInt(req.query.paginate) || 10;
   const isAdmin = req.user.role?.name === 'admin';
   const filter = isAdmin ? {} : { consumer_id: req.user._id };
-  if (req.query.status) filter.status_id = req.query.status;
+  // Las pestañas del admin enlazan con el SLUG del estado ('pending',
+  // 'delivered', ...), no con su ObjectId: se resuelve el slug antes de
+  // filtrar (un slug crudo en status_id provocaba un CastError → 500).
+  if (req.query.status) {
+    const raw = String(req.query.status);
+    if (mongoose.Types.ObjectId.isValid(raw) && String(new mongoose.Types.ObjectId(raw)) === raw) {
+      filter.status_id = raw;
+    } else {
+      const st = await OrderStatus.findOne({ slug: raw }, '_id');
+      // Slug desconocido → ninguna orden coincide (mejor lista vacía que 500).
+      filter.status_id = st ? st._id : null;
+    }
+  }
+  // Filtros por pago (usados por las pestañas del admin, p. ej. "Mercado
+  // Pago pagados" = payment_method=mercadopago & payment_status=completed).
+  if (req.query.payment_method) filter.payment_method = req.query.payment_method;
+  if (req.query.payment_status) filter.payment_status = req.query.payment_status;
   const total = await Order.countDocuments(filter);
   const data = await Order.find(filter)
     .skip((page - 1) * limit).limit(limit).sort({ createdAt: -1 })
