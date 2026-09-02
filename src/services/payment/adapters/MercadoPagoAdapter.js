@@ -4,7 +4,7 @@ const PaymentGateway = require('../PaymentGateway');
  * Adapter para Mercado Pago — Checkout Pro (flujo de redirect).
  *
  * Variables de entorno requeridas:
- *   MP_ACCESS_TOKEN  — Access Token de producción o sandbox
+ *   MP_ACCESS_TOKEN  — Access Token (credenciales de prueba o de producción)
  *   BASE_URL         — URL pública del backend (para notification_url)
  *   STORE_URL        — URL pública del frontend (para back_urls)
  *
@@ -84,13 +84,13 @@ class MercadoPagoAdapter extends PaymentGateway {
     };
 
     const result = await preference.create({ body });
-    // En producción usar result.init_point. Con MP_SANDBOX=true se prefiere
-    // sandbox_init_point, pero MP ya no lo devuelve en muchas cuentas (con
-    // credenciales de prueba, init_point ya abre un checkout de prueba), así
-    // que se cae a init_point en vez de devolver undefined.
-    const redirect_url = process.env.MP_SANDBOX === 'true'
-      ? (result.sandbox_init_point || result.init_point)
-      : result.init_point;
+    // Siempre init_point. El antiguo sandbox_init_point apunta a
+    // sandbox.mercadopago.com.co, dominio legado que hoy entra en un bucle de
+    // redirecciones (ERR_TOO_MANY_REDIRECTS). El entorno de prueba se decide
+    // por las CREDENCIALES (de prueba vs. producción), no por la URL: con
+    // credenciales de prueba, init_point ya abre un checkout de prueba.
+    // MP_SANDBOX queda solo como bandera informativa (banner QA, logs).
+    const redirect_url = result.init_point || result.sandbox_init_point;
     if (!redirect_url) throw new Error('Mercado Pago no devolvió init_point para la preferencia');
 
     return { redirect_url, preference_id: result.id };

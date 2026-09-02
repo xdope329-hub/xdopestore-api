@@ -2,16 +2,14 @@ const router = require('express').Router();
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const auth = require('../middleware/auth');
-const { findVariation, unitPrice } = require('../utils/cartPricing');
+const { findVariation, unitPrice, shapeCartVariation, CART_PRODUCT_POPULATE } = require('../utils/cartPricing');
 
 // A cart line for a variable product stores only variation_id — resolve the
-// full variant subdoc so the storefront can show its name/talla and price.
+// full variant subdoc so the storefront can show its name/talla, price and
+// the variation photo (the drawer showed the product thumbnail for every
+// color because variation images were never populated here).
 async function getCartResponse(userId) {
-  const items = await Cart.find({ consumer_id: userId })
-    .populate({
-      path: 'product_id',
-      populate: { path: 'product_thumbnail_id', select: 'asset_url original_url' },
-    });
+  const items = await Cart.find({ consumer_id: userId }).populate(CART_PRODUCT_POPULATE);
 
   const shaped = items.map(i => {
     const obj = i.toJSON ? i.toJSON() : i;
@@ -24,7 +22,7 @@ async function getCartResponse(userId) {
     obj.product_id = product._id || product.id;
     // Expose the chosen variant (name, attribute_values, prices) so the UI
     // can render "Talla: S" and charge the variant's price.
-    obj.variation = findVariation(product, obj.variation_id);
+    obj.variation = shapeCartVariation(product, obj.variation_id);
     return obj;
   });
 

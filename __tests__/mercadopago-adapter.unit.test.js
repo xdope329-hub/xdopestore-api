@@ -70,18 +70,17 @@ describe('MercadoPagoAdapter.initializePayment', () => {
     expect(capturedBody.back_urls.success).toBe('https://xdope.vercel.app/order/success?id=order123');
   });
 
-  test('sandbox flag picks sandbox_init_point', async () => {
+  test('always redirects to init_point, even with MP_SANDBOX=true (sandbox_init_point is a legacy domain that loops)', async () => {
     process.env.STORE_URL = 'https://xdope.vercel.app';
     process.env.BASE_URL = 'https://xdope-api.onrender.com';
     process.env.MP_SANDBOX = 'true';
 
     const result = await new MercadoPagoAdapter().initializePayment(ORDER);
-    expect(result.redirect_url).toBe('https://mp/sandbox');
+    expect(result.redirect_url).toBe('https://mp/init');
   });
 
-  test('sandbox flag falls back to init_point when MP omits sandbox_init_point', async () => {
-    process.env.MP_SANDBOX = 'true';
-    mockPreferenceResponse = { id: 'pref_1', init_point: 'https://mp/init' };
+  test('MP_SANDBOX=false also uses init_point', async () => {
+    process.env.MP_SANDBOX = 'false';
 
     const result = await new MercadoPagoAdapter().initializePayment(ORDER);
     expect(result.redirect_url).toBe('https://mp/init');
