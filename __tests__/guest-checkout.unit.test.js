@@ -8,6 +8,10 @@
  * toca en pedidos COD de invitados.
  */
 
+// config/jwt.js se niega a cargar sin un secreto válido (lo requiere
+// optionalAuth); las demás suites lo fijan igual.
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'x'.repeat(48);
+
 const request = require('supertest');
 
 const hoodie = { _id: 'p1', name: 'Hoodie Negro', price: 150000, sale_price: 0, status: 1, variations: [{ _id: 'v1', name: 'Negro/M', price: 150000, sale_price: 140000 }] };

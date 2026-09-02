@@ -3,7 +3,36 @@ const Coupon = require('../models/Coupon');
 const auth = require('../middleware/auth');
 const adminOnly = require('../middleware/adminOnly');
 
-router.get('/', auth, async (req, res) => {
+// Campos que un cliente puede ver de un cupón vigente (para el "ver
+// cupones" del checkout). Límites de uso, contadores y flags internos
+// quedan fuera; el catálogo completo es solo para administradores.
+const publicCouponFields = (c) => ({
+  id: c.id || c._id,
+  title: c.title,
+  description: c.description,
+  code: c.code,
+  type: c.type,
+  amount: c.amount,
+  min_spend: c.min_spend,
+  end_date: c.end_date,
+});
+
+// GET /coupon/public — cupones activos y vigentes, vista de cliente.
+router.get('/public', auth, async (req, res) => {
+  const now = new Date();
+  const data = await Coupon.find({
+    status: 1,
+    is_expired: { $ne: true },
+    $and: [
+      { $or: [{ start_date: null }, { start_date: { $exists: false } }, { start_date: { $lte: now } }] },
+      { $or: [{ end_date: null }, { end_date: { $exists: false } }, { end_date: { $gte: now } }] },
+    ],
+  }).sort({ createdAt: -1 }).limit(20);
+  res.json({ data: data.map(publicCouponFields) });
+});
+
+// Catálogo completo: solo administración.
+router.get('/', auth, adminOnly, async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.paginate) || 15;
   const filter = {};
@@ -13,7 +42,7 @@ router.get('/', auth, async (req, res) => {
   res.json({ current_page: page, last_page: Math.ceil(total / limit), total, per_page: limit, data });
 });
 
-router.get('/:id', auth, async (req, res) => {
+router.get('/:id', auth, adminOnly, async (req, res) => {
   const coupon = await Coupon.findById(req.params.id);
   if (!coupon) return res.status(404).json({ message: 'Coupon not found' });
   res.json(coupon);

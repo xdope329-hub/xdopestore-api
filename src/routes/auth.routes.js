@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const { isAdminUser } = require('../utils/roles');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
@@ -9,11 +10,21 @@ const {
   revokeRefreshToken,
   revokeAllForUser,
 } = require('../config/refreshTokens');
+const crypto = require('crypto');
 const {
   loginLimiter,
   registerLimiter,
   passwordResetLimiter,
+  otpLimiter,
+  refreshLimiter,
 } = require('../middleware/rateLimiters');
+
+// Password reset: 6-digit code from a CSPRNG, limited attempts, and a
+// single-use token that /update-password must present.
+const OTP_TTL_MS = 15 * 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+const RESET_TOKEN_TTL_MS = 10 * 60 * 1000;
+const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
 const { verifyRecaptcha } = require('../middleware/recaptcha');
 const { verifyGoogleIdToken } = require('../config/googleAuth');
 
@@ -150,7 +161,7 @@ router.post('/login/google', loginLimiter, async (req, res) => {
 });
 
 // POST /refresh - swap a refresh token for a new access token + rotated refresh
-router.post('/refresh', async (req, res) => {
+router.post('/refresh', refreshLimiter, async (req, res) => {
   const rawRefresh = req.body?.refresh_token || req.headers['x-refresh-token'];
   if (!rawRefresh) return res.status(401).json({ message: 'Missing refresh token' });
 
@@ -195,7 +206,7 @@ router.get('/self', auth, async (req, res) => {
     .populate('profile_image_id', 'asset_url original_url')
     .select('-password -otp -otp_expires_at -otp_verified_at -otp_verified_expires_at');
   const obj = transformUser(user);
-  const isAdmin = user.role?.system_reserve === '1';
+  const isAdmin = isAdminUser(user);
   obj.permission = isAdmin ? PERMISSIONS : resolvePermissions(user.role?.permissions || []);
   obj.address = await Address.find({ user_id: req.user._id }).sort({ is_default: -1, createdAt: -1 });
   res.json(obj);
@@ -208,47 +219,91 @@ router.post('/forgot-password', passwordResetLimiter, async (req, res) => {
   const normalized = String(email).toLowerCase();
   const user = await User.findOne({ email: normalized });
   if (user) {
-    user.otp = String(Math.floor(100000 + Math.random() * 900000));
-    user.otp_expires_at = new Date(Date.now() + 15 * 60 * 1000);
+    // CSPRNG (Math.random no es apto para códigos de seguridad).
+    user.otp = String(crypto.randomInt(100000, 1000000));
+    user.otp_expires_at = new Date(Date.now() + OTP_TTL_MS);
+    user.otp_attempts = 0;
+    user.otp_verified_at = undefined;
+    user.otp_verified_expires_at = undefined;
+    user.password_reset_token_hash = undefined;
+    user.password_reset_expires_at = undefined;
     await user.save({ validateBeforeSave: false });
     if (process.env.NODE_ENV !== 'production') {
       console.log('[forgot-password] OTP for', normalized, '=', user.otp);
     }
+    // El código viaja por correo (antes nunca se enviaba y el flujo no
+    // podía completarse en producción). No bloquea la respuesta.
+    const mail = require('../services/mail');
+    mail.sendPasswordResetOTP({ email: user.email, name: user.name, otp: user.otp })
+      .catch(mail.logMailError('password-reset-otp'));
   }
   res.json({ message: 'If that email is registered, a reset code has been sent.' });
 });
 
-router.post('/verify-otp', async (req, res) => {
-  const { email, otp } = req.body || {};
+// El admin envía el código como `token`; el storefront como `otp`.
+router.post('/verify-otp', otpLimiter, async (req, res) => {
+  const { email } = req.body || {};
+  const otp = req.body?.otp ?? req.body?.token;
   if (!email || !otp) return res.status(422).json({ message: 'Email and OTP required' });
   const user = await User.findOne({ email: String(email).toLowerCase() });
-  if (!user || !user.otp || user.otp !== String(otp) || !user.otp_expires_at || user.otp_expires_at < new Date()) {
-    return res.status(422).json({ message: 'Invalid or expired OTP' });
+  const invalid = () => res.status(422).json({ message: 'Invalid or expired OTP' });
+  if (!user || !user.otp || !user.otp_expires_at || user.otp_expires_at < new Date()) return invalid();
+
+  const presented = String(otp).trim();
+  const matches = presented.length === user.otp.length && crypto.timingSafeEqual(Buffer.from(presented), Buffer.from(user.otp));
+  if (!matches) {
+    // Contador por usuario: al agotar los intentos el código deja de valer
+    // y hay que pedir uno nuevo (evita adivinar los 6 dígitos).
+    user.otp_attempts = (user.otp_attempts || 0) + 1;
+    if (user.otp_attempts >= OTP_MAX_ATTEMPTS) {
+      user.otp = undefined;
+      user.otp_expires_at = undefined;
+    }
+    await user.save({ validateBeforeSave: false });
+    return invalid();
   }
+
+  // Token de un solo uso para /update-password (se guarda solo su hash).
+  const resetToken = crypto.randomBytes(32).toString('hex');
   user.otp_verified_at = new Date();
-  user.otp_verified_expires_at = new Date(Date.now() + 10 * 60 * 1000);
+  user.otp_verified_expires_at = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+  user.password_reset_token_hash = sha256(resetToken);
+  user.password_reset_expires_at = new Date(Date.now() + RESET_TOKEN_TTL_MS);
   user.otp = undefined;
   user.otp_expires_at = undefined;
+  user.otp_attempts = 0;
   await user.save({ validateBeforeSave: false });
-  res.json({ message: 'OTP verified', email: user.email });
+  res.json({ message: 'OTP verified', email: user.email, reset_token: resetToken });
 });
 router.post('/verify-token', (req, res, next) => { req.url = '/verify-otp'; router.handle(req, res, next); });
 
-router.post('/update-password', async (req, res) => {
+// Exige el `reset_token` devuelto por /verify-otp (el admin lo manda como
+// `token`): antes bastaba conocer el correo dentro de la ventana de 10 min.
+router.post('/update-password', otpLimiter, async (req, res) => {
   const { email, password } = req.body || {};
+  const resetToken = req.body?.reset_token ?? req.body?.token;
   if (!email || !password) return res.status(422).json({ message: 'Email and password required' });
+  if (!resetToken) return res.status(422).json({ message: 'Reset token required. Please restart the reset flow.' });
   if (!isPasswordStrong(password)) {
     return res.status(422).json({
       message: 'Password must be 8-128 characters and contain at least one letter and one number',
     });
   }
   const user = await User.findOne({ email: String(email).toLowerCase() });
-  if (!user || !user.otp_verified_expires_at || user.otp_verified_expires_at < new Date()) {
+  const tokenValid =
+    user &&
+    user.password_reset_token_hash &&
+    user.password_reset_expires_at &&
+    user.password_reset_expires_at >= new Date() &&
+    crypto.timingSafeEqual(Buffer.from(user.password_reset_token_hash), Buffer.from(sha256(resetToken)));
+  if (!tokenValid) {
     return res.status(422).json({ message: 'OTP not verified or verification expired. Please restart the reset flow.' });
   }
   user.password = password;
   user.otp_verified_at = undefined;
   user.otp_verified_expires_at = undefined;
+  user.password_reset_token_hash = undefined;
+  user.password_reset_expires_at = undefined;
   await user.save();
   // Force re-login everywhere after a password change
   await revokeAllForUser(user._id);

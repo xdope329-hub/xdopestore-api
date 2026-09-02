@@ -1,11 +1,12 @@
 const router = require('express').Router();
+const { checkoutLimiter } = require('../middleware/rateLimiters');
 const Cart = require('../models/Cart');
 const Coupon = require('../models/Coupon');
 const auth = require('../middleware/auth');
 const optionalAuth = require('../middleware/optionalAuth');
 
 // POST /checkout  — returns totals summary (does not create order)
-router.post('/', optionalAuth, async (req, res) => {
+router.post('/', checkoutLimiter, optionalAuth, async (req, res) => {
   const { coupon_code, shipping_id } = req.body;
   // Ciudad de entrega: enviada directamente (invitados) o resuelta desde la
   // dirección de envío guardada (usuarios con sesión).

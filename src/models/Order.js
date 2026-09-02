@@ -7,6 +7,11 @@ const orderProductSchema = new mongoose.Schema({
   // purchase time, so admin/order views can show size & color even if the
   // product's variations are later edited or removed.
   variation_name: { type: String, default: null },
+  // Instantánea de la variante: cada atributo elegido (Color: Cafe, Talla: M)
+  // y el SKU, para que el detalle del pedido muestre exactamente lo comprado
+  // aunque el producto cambie después (utils/orderLineSnapshot.js).
+  variation_attributes: { type: [{ name: String, value: String }], default: [] },
+  sku: { type: String, default: null },
   name: String,
   quantity: Number,
   price: Number,
@@ -39,7 +44,13 @@ const orderSchema = new mongoose.Schema({
   billing_address: addressSubSchema,
   shipping_address: addressSubSchema,
   payment_method: { type: String, default: 'cod' },
+  // Estado del PAGO (solo la pasarela lo escribe): pending | completed |
+  // rejected | cancelled | refunded. Independiente del estado logístico del
+  // pedido (status_id). Ver utils/orderStatusFlow.js.
   payment_status: { type: String, default: 'pending' },
+  // Estado crudo reportado por la pasarela (p. ej. Mercado Pago: approved,
+  // in_process, rejected…), para diagnóstico en el admin.
+  payment_gateway_status: { type: String, default: null },
   amount: Number,
   tax_total: { type: Number, default: 0 },
   shipping_total: { type: Number, default: 0 },

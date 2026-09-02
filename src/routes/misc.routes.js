@@ -1,5 +1,7 @@
 // Misc routes — stubs + real implementations for Tax, ThemeOptions and Tag
 const router = require('express').Router();
+const { publicFormLimiter } = require('../middleware/rateLimiters');
+const { isAdminUser } = require('../utils/roles');
 const slugify = require('slugify');
 const Order = require('../models/Order');
 const Tax = require('../models/Tax');
@@ -77,7 +79,7 @@ router.post('/themeOptions', auth, adminOnly, async (req, res) => {
 
 // GET /theme
 router.get('/theme', (req, res) => res.json({ current_page: 1, last_page: 1, total: 1, per_page: 15, data: [{ id: '1', _id: '1', name: 'Fashion One', slug: 'fashion_one', status: 1 }] }));
-router.put('/theme/:id?', ok);
+router.put('/theme/:id?', auth, adminOnly, ok);
 
 // Tag CRUD
 router.get('/tag', async (req, res) => {
@@ -204,8 +206,8 @@ router.delete('/tax/:id', auth, adminOnly, async (req, res) => {
 // GET /store
 router.get('/store', emptyList);
 router.get('/store/:id', async (req, res) => res.json({}));
-router.post('/store', ok);
-router.put('/store/:id', ok);
+router.post('/store', auth, adminOnly, ok);
+router.put('/store/:id', auth, adminOnly, ok);
 
 // GET /page
 router.get('/page', emptyList);
@@ -216,9 +218,9 @@ router.delete('/page/:id', ok);
 
 // GET /faq
 router.get('/faq', emptyList);
-router.post('/faq', ok);
-router.put('/faq/:id', ok);
-router.delete('/faq/:id', ok);
+router.post('/faq', auth, adminOnly, ok);
+router.put('/faq/:id', auth, adminOnly, ok);
+router.delete('/faq/:id', auth, adminOnly, ok);
 
 // ───────────────────────── Question & Answer ─────────────────────────
 // GET /question-and-answer — list (filter by product_id, status=pending|answered, search)
@@ -279,7 +281,7 @@ router.put('/question-and-answer/:id', auth, async (req, res) => {
   const existing = await Question.findById(req.params.id);
   if (!existing) return res.status(404).json({ message: 'Question not found' });
 
-  const isAdmin = req.user?.role?.name === 'admin' || req.user?.role?.slug === 'admin';
+  const isAdmin = isAdminUser(req.user);
   const isOwner = existing.consumer_id && existing.consumer_id.toString() === req.user._id.toString();
 
   const update = {};
@@ -440,7 +442,7 @@ router.delete('/menu/:id', auth, adminOnly, async (req, res) => {
 });
 
 // POST /subscribe — newsletter opt-in, forwards to Brevo contact list
-router.post('/subscribe', async (req, res) => {
+router.post('/subscribe', publicFormLimiter, async (req, res) => {
   const email = req.body?.email;
   const name = req.body?.name;
   if (!email || !/^\S+@\S+\.\S+$/.test(String(email))) {
@@ -468,10 +470,10 @@ router.post('/subscribe', async (req, res) => {
 // GET /notice
 router.get('/notice', emptyList);
 router.get('/notice/recent', emptyData);
-router.put('/notice/markAsRead', ok);
+router.put('/notice/markAsRead', auth, ok);
 
 // GET /contact-us
-router.post('/contact-us', ok);
+router.post('/contact-us', publicFormLimiter, ok);
 
 // GET /commissionHistory
 router.get('/commissionHistory', emptyList);
@@ -483,20 +485,23 @@ router.get('/commissionHistory', emptyList);
 
 // GET /withdrawRequest
 router.get('/withdrawRequest', emptyList);
-router.post('/withdrawRequest', ok);
+router.post('/withdrawRequest', auth, adminOnly, ok);
 
 // GET /refund
 router.get('/refund', emptyList);
-router.post('/refund', ok);
-router.put('/refund/:id', ok);
+router.post('/refund', auth, adminOnly, ok);
+router.put('/refund/:id', auth, adminOnly, ok);
 
 // GET /badge — counts for admin dashboard notification badges
-router.get('/badge', auth, async (req, res) => {
+router.get('/badge', auth, adminOnly, async (req, res) => {
   const Product = require('../models/Product');
   const Order = require('../models/Order');
+  const OrderStatus = require('../models/OrderStatus');
+  // "Pedidos pendientes" = estado del PEDIDO pendiente, no del pago.
+  const pendingStatus = await OrderStatus.findOne({ slug: 'pending' }, '_id');
   const [unapprovedProducts, pendingOrders] = await Promise.all([
     Product.countDocuments({ is_approved: false }),
-    Order.countDocuments({ payment_status: 'pending' }),
+    pendingStatus ? Order.countDocuments({ status_id: pendingStatus._id }) : Promise.resolve(0),
   ]);
   res.json({
     data: {
@@ -510,20 +515,20 @@ router.get('/badge', auth, async (req, res) => {
 
 // GET /points/consumer
 router.get('/points/consumer', auth, async (req, res) => res.json({ data: { balance: 0, transactions: [] } }));
-router.post('/credit/points', ok);
-router.post('/debit/points', ok);
+router.post('/credit/points', auth, adminOnly, ok);
+router.post('/debit/points', auth, adminOnly, ok);
 
 // Vendor wallet stubs
 router.get('/wallet/vendor', ok);
-router.post('/credit/vendorWallet', ok);
-router.post('/debit/vendorWallet', ok);
+router.post('/credit/vendorWallet', auth, adminOnly, ok);
+router.post('/debit/vendorWallet', auth, adminOnly, ok);
 
 // Payment stubs
-router.post('/verifyPayment', ok);
-router.post('/rePayment', ok);
+router.post('/verifyPayment', auth, adminOnly, ok);
+router.post('/rePayment', auth, adminOnly, ok);
 
 // GET /module — permission modules list for role creation form
-router.get('/module', auth, async (req, res) => {
+router.get('/module', auth, adminOnly, async (req, res) => {
   const { getModuleList } = require('../data/permissions');
   res.json({ data: getModuleList() });
 });
@@ -535,28 +540,42 @@ router.get('/license-key', async (req, res) => res.json({ data: { status: 'activ
 router.get('/app/settings', async (req, res) => res.json({ data: {} }));
 
 // GET /trackOrder
+// Solo el dueño del pedido (o un administrador) puede verlo: los números de
+// pedido son secuenciales y antes cualquier sesión veía cualquier pedido.
+const isOrderOwnerOrAdmin = (req, order) =>
+  isAdminUser(req.user) ||
+  (order?.consumer_id && String(order.consumer_id?._id || order.consumer_id) === String(req.user?._id));
+
+// El payload crudo de la pasarela y sus campos de diagnóstico son solo
+// para administradores.
+const customerOrderView = (req, order) => {
+  const obj = order.toJSON ? order.toJSON() : { ...order };
+  if (!isAdminUser(req.user)) ['payment_gateway_response', 'payment_error', 'payment_gateway_status'].forEach((f) => { delete obj[f]; });
+  return obj;
+};
+
 router.get('/trackOrder', auth, async (req, res) => {
   const { order_number } = req.query;
   const order = await Order.findOne({ order_number }).populate('status_id');
-  if (!order) return res.status(404).json({ message: 'Order not found' });
-  res.json(order);
+  if (!order || !isOrderOwnerOrAdmin(req, order)) return res.status(404).json({ message: 'Order not found' });
+  res.json(customerOrderView(req, order));
 });
 
 // GET /order/invoice/:id
 router.get('/order/invoice/:id', auth, async (req, res) => {
   const order = await Order.findById(req.params.id).populate('consumer_id').populate('status_id');
-  if (!order) return res.status(404).json({ message: 'Order not found' });
-  res.json(order);
+  if (!order || !isOrderOwnerOrAdmin(req, order)) return res.status(404).json({ message: 'Order not found' });
+  res.json(customerOrderView(req, order));
 });
 
 // POST /login/number
 router.post('/login/number', async (req, res) => res.status(501).json({ message: 'Phone login not implemented' }));
 
 // GET /updateStoreProfile
-router.put('/updateStoreProfile', ok);
+router.put('/updateStoreProfile', auth, adminOnly, ok);
 
 // product approve
-router.put('/approve/:id', ok);
+router.put('/approve/:id', auth, adminOnly, ok);
 
 // exposed for unit tests
 router.buildMenuTree = buildMenuTree;

@@ -2,6 +2,8 @@ const router = require('express').Router();
 const Setting = require('../models/Setting');
 const auth = require('../middleware/auth');
 const adminOnly = require('../middleware/adminOnly');
+const optionalAuth = require('../middleware/optionalAuth');
+const { redactSettingsFor } = require('../utils/settingsRedaction');
 
 // Default storefront settings, seeded on the very first GET /settings.
 // COP is the default currency; USD is supported as a secondary picker option.
@@ -71,7 +73,7 @@ const DEFAULT_SETTING_VALUES = {
 };
 
 // GET /settings  — public (UI middleware calls this unauthenticated)
-router.get('/', async (req, res) => {
+router.get('/', optionalAuth, async (req, res) => {
   let setting = await Setting.findOne();
   if (!setting) {
     setting = await Setting.create({ values: DEFAULT_SETTING_VALUES });
@@ -129,7 +131,8 @@ router.get('/', async (req, res) => {
       await setting.save();
     }
   }
-  res.json(setting);
+  // Anónimos y consumidores no reciben credenciales (utils/settingsRedaction.js).
+  res.json(redactSettingsFor(req.user, setting));
 });
 
 // PUT /settings  — admin only
@@ -147,7 +150,8 @@ router.put('/', auth, adminOnly, async (req, res) => {
     setting.markModified('values');
     await setting.save();
   }
-  res.json(setting);
+  // Anónimos y consumidores no reciben credenciales (utils/settingsRedaction.js).
+  res.json(redactSettingsFor(req.user, setting));
 });
 
 // POST /settings/test-email — admin-only, fires a Brevo test email
