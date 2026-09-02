@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const { isAdminUser } = require('../utils/roles');
 const Review = require('../models/Review');
 const Order = require('../models/Order');
 const OrderStatus = require('../models/OrderStatus');
@@ -60,7 +61,10 @@ router.post('/', auth, async (req, res) => {
   });
   if (!hasPurchased) return res.status(403).json({ message: 'Debes comprar el producto para dejar una reseña' });
 
-  const review = await Review.create({ ...req.body, consumer_id: req.user._id });
+  // Solo los campos que el cliente puede fijar: nunca `status` ni otros
+  // internos por asignación masiva.
+  const { product_id, rating, description, review_image_id } = req.body;
+  const review = await Review.create({ product_id, rating, description, review_image_id, consumer_id: req.user._id });
   res.status(201).json(review);
 });
 
@@ -78,7 +82,7 @@ router.put('/:id', auth, async (req, res) => {
 router.delete('/:id', auth, async (req, res) => {
   const review = await Review.findById(req.params.id);
   if (!review) return res.status(404).json({ message: 'Review no encontrada' });
-  const isAdmin = req.user?.role?.name === 'admin';
+  const isAdmin = isAdminUser(req.user);
   if (!isAdmin && review.consumer_id.toString() !== req.user._id.toString())
     return res.status(403).json({ message: 'No autorizado' });
   await review.deleteOne();

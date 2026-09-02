@@ -50,8 +50,8 @@ async function replaceCartHandler(req, res) {
   if (!product) return res.status(404).json({ message: 'Product not found' });
   const price = unitPrice(product, findVariation(product, variation_id));
 
-  // Remove old item if `id` provided
-  if (id) await Cart.findByIdAndDelete(id);
+  // Remove old item if `id` provided — only from the caller's own cart.
+  if (id) await Cart.findOneAndDelete({ _id: id, consumer_id: req.user._id });
 
   const existing = await Cart.findOne({ consumer_id: req.user._id, product_id, variation_id: variation_id || null });
   if (existing) {

@@ -1,9 +1,13 @@
 const router = require('express').Router();
+const { isAdminUser } = require('../utils/roles');
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
+const { buildOrderLineSnapshot, describeOrderLine } = require('../utils/orderLineSnapshot');
+const { transitionOrder, allowedNextStatusDocs } = require('../services/orderTransitions');
 const Cart = require('../models/Cart');
 const OrderStatus = require('../models/OrderStatus');
 const auth = require('../middleware/auth');
+const adminOnly = require('../middleware/adminOnly');
 
 // Resolve the variant subdocument from the populated product (cart lines only
 // store variation_id) so the order can snapshot its name and price.
@@ -16,11 +20,16 @@ function findCartVariation(product, variationId) {
 function transformProduct(p) {
   const item = p.toJSON ? p.toJSON() : { ...p };
   const productDoc = item.product_id; // populated or ObjectId
+  // Atributos (Color, Talla…) y SKU: de la instantánea guardada en la línea
+  // o, para pedidos anteriores, resueltos desde la variante del producto.
+  const line = describeOrderLine(item, productDoc && typeof productDoc === 'object' ? productDoc : null);
   return {
     id: item._id,
     product_id: productDoc?._id || productDoc,
     variation_id: item.variation_id,
     name: item.name,
+    sku: line.sku,
+    variation_attributes: line.variation_attributes,
     product_thumbnail: productDoc?.product_thumbnail_id || null,
     is_return: productDoc?.is_return ?? 1,
     pivot: {
@@ -30,14 +39,22 @@ function transformProduct(p) {
       // Admin & storefront order views render pivot.variation.name when
       // present (falling back to the product name), so include the product
       // name for context: "Gato curioso — S / Negro".
-      variation: item.variation_name ? { name: `${item.name} — ${item.variation_name}` } : null,
+      variation: line.variation_name
+        ? { name: `${item.name} — ${line.variation_name}`, sku: line.sku, attributes: line.variation_attributes }
+        : null,
       refund_status: item.refund_status || null,
     },
   };
 }
 
-function transformOrder(order) {
-  const obj = order.toJSON ? order.toJSON() : order;
+// Campos de diagnóstico de la pasarela: solo el administrador los ve. El
+// cliente no los necesita y el payload crudo de Mercado Pago trae datos que
+// no son suyos para exponer.
+const GATEWAY_INTERNAL_FIELDS = ['payment_gateway_response', 'payment_error', 'payment_gateway_status'];
+
+function transformOrder(order, { admin = false } = {}) {
+  const obj = order.toJSON ? order.toJSON() : { ...order };
+  if (!admin) GATEWAY_INTERNAL_FIELDS.forEach((field) => { delete obj[field]; });
   obj.order_status = obj.status_id || null;
   obj.consumer = obj.consumer_id || null;
   obj.created_at = obj.createdAt;
@@ -61,14 +78,16 @@ function findOrderQuery(param) {
 const populateDetail = [
   { path: 'consumer_id', select: 'name email phone' },
   { path: 'status_id' },
-  { path: 'products.product_id', select: 'name product_thumbnail_id is_return', populate: { path: 'product_thumbnail_id', select: 'original_url' } },
+  // `sku` y `variations` permiten reconstruir atributos/SKU de pedidos
+  // anteriores a la instantánea por línea (utils/orderLineSnapshot.js).
+  { path: 'products.product_id', select: 'name product_thumbnail_id is_return sku variations', populate: { path: 'product_thumbnail_id', select: 'original_url' } },
 ];
 
 // GET /order
 router.get('/', auth, async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.paginate) || 10;
-  const isAdmin = req.user.role?.name === 'admin';
+  const isAdmin = isAdminUser(req.user);
   const filter = isAdmin ? {} : { consumer_id: req.user._id };
   // Las pestañas del admin enlazan con el SLUG del estado ('pending',
   // 'delivered', ...), no con su ObjectId: se resuelve el slug antes de
@@ -92,12 +111,14 @@ router.get('/', auth, async (req, res) => {
     .skip((page - 1) * limit).limit(limit).sort({ createdAt: -1 })
     .populate('consumer_id', 'name email phone')
     .populate('status_id');
-  res.json({ current_page: page, last_page: Math.ceil(total / limit), total, per_page: limit, data: data.map(transformOrder) });
+  res.json({ current_page: page, last_page: Math.ceil(total / limit), total, per_page: limit, data: data.map((o) => transformOrder(o, { admin: isAdmin })) });
 });
 
 // POST /order — create new order
 router.post('/', auth, async (req, res) => {
   if (req.body && req.body.order_status_id !== undefined) {
+    // Cambio de estado por esta vía: solo administradores.
+    if (!isAdminUser(req.user)) return res.status(403).json({ message: 'Forbidden: admin only' });
     return handleStatusUpdate(req, res);
   }
 
@@ -110,7 +131,8 @@ router.post('/', auth, async (req, res) => {
     return {
       product_id: i.product_id._id,
       variation_id: i.variation_id,
-      variation_name: variation ? variation.name : null,
+      // variation_name + variation_attributes (Color, Talla…) + sku
+      ...buildOrderLineSnapshot(i.product_id, variation),
       name: i.product_id.name,
       quantity: i.quantity,
       // For variable products the unit price is the variant's, not the parent's.
@@ -155,20 +177,25 @@ router.get('/:id', auth, async (req, res) => {
   if (!q) return res.status(404).json({ message: 'Order not found' });
   const order = await q.populate(populateDetail);
   if (!order) return res.status(404).json({ message: 'Order not found' });
-  const isAdmin = req.user.role?.name === 'admin';
+  const isAdmin = isAdminUser(req.user);
   if (!isAdmin && order.consumer_id._id.toString() !== req.user._id.toString()) {
     return res.status(403).json({ message: 'Forbidden' });
   }
-  res.json(transformOrder(order));
+  const payload = transformOrder(order, { admin: isAdmin });
+  // Siguientes estados que el administrador puede elegir (la regla vive en
+  // el backend; el admin solo muestra estas opciones).
+  payload.allowed_next_statuses = await allowedNextStatusDocs(order.status_id?.slug);
+  res.json(payload);
 });
 
-// PUT /order/:id — update order status (admin)
-router.put('/:id', auth, async (req, res) => {
+// PUT /order/:id — update order status (SOLO administradores: antes bastaba
+// cualquier sesión de cliente para cambiar el estado de cualquier pedido).
+router.put('/:id', auth, adminOnly, async (req, res) => {
   await handleStatusUpdate(req, res);
 });
 
 // POST /order/:id — method-override from admin dashboard (sends _method:put)
-router.post('/:id', auth, async (req, res) => {
+router.post('/:id', auth, adminOnly, async (req, res) => {
   await handleStatusUpdate(req, res);
 });
 
@@ -190,12 +217,13 @@ async function handleStatusUpdate(req, res) {
 
   const prevStatusId = String(found.status_id || '');
 
-  const order = await Order.findByIdAndUpdate(
-    found._id,
-    { status_id: statusId },
-    { new: true }
-  ).populate(populateDetail);
+  // Cambio MANUAL del estado logístico: solo el siguiente paso de la
+  // secuencia (o cancelar antes de enviar). Un salto devuelve 422 con los
+  // estados permitidos. Nunca toca el estado del pago.
+  const result = await transitionOrder(found, statusId);
+  if (!result.ok) return res.status(result.status || 422).json({ message: result.message, allowed_next_statuses: result.allowed || [] });
 
+  const order = await Order.findById(found._id).populate(populateDetail);
   if (!order) return res.status(404).json({ message: 'Order not found' });
 
   if (String(order.status_id?._id || order.status_id || '') !== prevStatusId) {
@@ -209,7 +237,9 @@ async function handleStatusUpdate(req, res) {
       .catch(mail.logMailError('order-status-update'));
   }
 
-  res.json(transformOrder(order));
+  const payload = transformOrder(order, { admin: true });
+  payload.allowed_next_statuses = await allowedNextStatusDocs(order.status_id?.slug);
+  res.json(payload);
 }
 
 module.exports = router;

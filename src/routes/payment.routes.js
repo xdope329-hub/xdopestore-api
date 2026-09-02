@@ -1,5 +1,8 @@
 const router = require('express').Router();
+const { checkoutLimiter } = require('../middleware/rateLimiters');
 const Order = require('../models/Order');
+const { buildOrderLineSnapshot, describeOrderLine } = require('../utils/orderLineSnapshot');
+const { applyPaymentResult } = require('../services/orderTransitions');
 const Cart = require('../models/Cart');
 const OrderStatus = require('../models/OrderStatus');
 const Address = require('../models/Address');
@@ -115,7 +118,8 @@ async function buildOrderFromCart(userId, body) {
     return {
       product_id: i.product_id._id,
       variation_id: i.variation_id || null,
-      variation_name: variation ? variation.name : null,
+      // variation_name + variation_attributes (Color, Talla…) + sku
+      ...buildOrderLineSnapshot(i.product_id, variation),
       name: i.product_id.name,
       quantity: i.quantity,
       // For variable products the unit price is the variant's, not the parent's.
@@ -159,7 +163,7 @@ async function buildOrderFromCart(userId, body) {
 // Crea la orden y delega al gateway correspondiente.
 // COD: retorna { success: true, order_id }
 // MP:  retorna { redirect_url, order_id }
-router.post('/initialize', optionalAuth, async (req, res) => {
+router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
   // Checkout de invitados: sin sesión se exigen nombre y correo para poder
   // confirmar el pedido y enviarle el número de orden.
   const isGuest = !req.user;
@@ -239,27 +243,15 @@ router.post('/webhook', async (req, res) => {
     if (!result) return;
 
     const { orderId, transactionId, status, gatewayResponse } = result;
-    const order = await Order.findById(orderId);
-    if (!order) return;
-
-    const update = {
-      payment_transaction_id: transactionId,
-      payment_gateway_response: gatewayResponse,
-    };
-
-    if (status === 'approved') {
-      update.payment_status = 'completed';
-      update.payment_completed_at = new Date();
-      // Avanzar la orden a 'processing' y limpiar carrito
-      const processingStatus = await OrderStatus.findOne({ slug: 'processing' });
-      if (processingStatus) update.status_id = processingStatus._id;
-      if (order.consumer_id) await Cart.deleteMany({ consumer_id: order.consumer_id });
-    } else if (status === 'rejected' || status === 'cancelled') {
-      update.payment_status = 'failed';
-      update.payment_error = `Pago ${status} por la pasarela`;
+    // Solo toca el estado del PAGO. El único efecto logístico es
+    // pending → processing al completarse el pago; una notificación
+    // repetida o tardía nunca regresa un pedido ya enviado
+    // (services/orderTransitions.js).
+    const applied = await applyPaymentResult(orderId, { transactionId, status, gatewayResponse });
+    if (!applied) return;
+    if (applied.advanced && applied.order.consumer_id) {
+      await Cart.deleteMany({ consumer_id: applied.order.consumer_id });
     }
-
-    await Order.findByIdAndUpdate(orderId, update);
   } catch (err) {
     console.error('[payment/webhook] error:', err.message);
   }
@@ -283,26 +275,26 @@ router.get('/verify/:orderId', optionalAuth, async (req, res) => {
     return res.json({ order_id: String(order._id), payment_status: order.payment_status, order_status: order.status_id });
   }
 
-  // Si aún está pending, consultamos a la pasarela
+  // Si aún está pending, consultamos a la pasarela. Misma regla que el
+  // webhook (services/orderTransitions.js): solo cambia el estado del pago
+  // y, si quedó completado con el pedido en pending, lo pasa a processing.
+  let orderStatus = order.status_id;
   try {
     const gateway = getGateway(order.payment_method);
     const result = await gateway.verifyPayment(order);
-    gatewayStatus = result.status;
-
-    if (gatewayStatus === 'approved') {
-      const processingStatus = await OrderStatus.findOne({ slug: 'processing' });
-      await Order.findByIdAndUpdate(order._id, {
-        payment_status: 'completed',
-        payment_completed_at: new Date(),
-        ...(processingStatus ? { status_id: processingStatus._id } : {}),
-      });
-      if (order.consumer_id) await Cart.deleteMany({ consumer_id: order.consumer_id });
+    const applied = await applyPaymentResult(order._id, { transactionId: order.payment_transaction_id, status: result.status });
+    if (applied) {
+      gatewayStatus = applied.paymentStatus;
+      if (applied.advanced) {
+        if (order.consumer_id) await Cart.deleteMany({ consumer_id: order.consumer_id });
+        orderStatus = await OrderStatus.findById(applied.update.status_id);
+      }
     }
   } catch (err) {
     console.error('[payment/verify] error:', err.message);
   }
 
-  res.json({ order_id: String(order._id), payment_status: gatewayStatus, order_status: order.status_id });
+  res.json({ order_id: String(order._id), payment_status: gatewayStatus, order_status: orderStatus });
 });
 
 module.exports = router;

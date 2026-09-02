@@ -37,4 +37,28 @@ const passwordResetLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-module.exports = { loginLimiter, registerLimiter, passwordResetLimiter };
+// OTP verification / password update: 10 attempts / 15 min per IP. Un OTP de
+// 6 dígitos sin límite se puede adivinar por fuerza bruta en minutos;
+// además, cada usuario tiene un contador de intentos (auth.routes.js).
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const make = (windowMs, max) => rateLimit({ windowMs, max, message, standardHeaders: true, legacyHeaders: false });
+
+// /refresh: a session renews at most a few times per window per IP; an
+// attacker guessing refresh tokens gets cut off quickly.
+const refreshLimiter = make(15 * 60 * 1000, 60);
+// Checkout preview + order creation (public for guests): enough for real
+// shoppers, too little for scripted order spam.
+const checkoutLimiter = make(15 * 60 * 1000, 60);
+// Media uploads (admin area): caps Cloudinary usage if a token leaks.
+const uploadLimiter = make(15 * 60 * 1000, 120);
+// Public forms (contact, newsletter): anti-spam.
+const publicFormLimiter = make(60 * 60 * 1000, 20);
+
+module.exports = { loginLimiter, registerLimiter, passwordResetLimiter, otpLimiter, refreshLimiter, checkoutLimiter, uploadLimiter, publicFormLimiter };
