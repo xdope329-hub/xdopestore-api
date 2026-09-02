@@ -41,11 +41,13 @@ describe('GET /product populates variation images for the storefront cards', () 
   let listQuery;
   const Product = { countDocuments: jest.fn(), find: jest.fn() };
   const Review = { aggregate: jest.fn() };
+  const Attribute = { find: jest.fn().mockResolvedValue([]) };
 
   beforeAll(() => {
     jest.resetModules();
     jest.doMock('../src/models/Product', () => Product);
     jest.doMock('../src/models/Review', () => Review);
+    jest.doMock('../src/models/Attribute', () => Attribute);
     const { mockAuth, buildApp } = require('./_support/helpers');
     mockAuth('consumer');
     app = buildApp([{ prefix: '/product', modulePath: '../src/routes/product.routes' }]);

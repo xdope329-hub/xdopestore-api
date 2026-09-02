@@ -130,3 +130,48 @@ describe('MercadoPagoAdapter — el monto cobrado es exactamente order.total', (
     await expect(new MercadoPagoAdapter().initializePayment(order)).rejects.toThrow(/inconsistente/);
   });
 });
+
+describe('MercadoPagoAdapter — COP sin centavos (MP rechaza "unit_price must be an integer")', () => {
+  const mpTotal = (b) => b.items.reduce((s, i) => s + i.unit_price * i.quantity, 0) + (b.shipments?.cost || 0);
+  const allIntegers = (b) => b.items.every((i) => Number.isInteger(i.unit_price)) && Number.isInteger(b.shipments?.cost ?? 0);
+
+  beforeEach(() => {
+    process.env.STORE_URL = 'https://xdope.com.co';
+    process.env.BASE_URL = 'https://api.xdope.com.co';
+  });
+
+  test('precio con centavos y una unidad: se redondea a pesos', async () => {
+    const order = { _id: 'o6', products: [{ product_id: 'p1', name: 'Caballero de la noche', price: 79999.5, quantity: 1 }], coupon_total_discount: 0, shipping_total: 0, total: 79999.5 };
+    await new MercadoPagoAdapter().initializePayment(order);
+    expect(allIntegers(capturedBody)).toBe(true);
+    expect(capturedBody.items[0].unit_price).toBe(80000);
+    expect(mpTotal(capturedBody)).toBe(80000);
+  });
+
+  test('varias unidades con centavos: si el redondeo por unidad se desvía, se consolida al total exacto', async () => {
+    // 2 × 79.999,50 = 159.999; redondear cada unidad daría 160.000.
+    const order = { _id: 'o7', products: [{ product_id: 'p1', name: 'Caballero de la noche', price: 79999.5, quantity: 2 }], coupon_total_discount: 0, shipping_total: 9900.4, total: 169899.4 };
+    await new MercadoPagoAdapter().initializePayment(order);
+    expect(allIntegers(capturedBody)).toBe(true);
+    expect(capturedBody.items).toHaveLength(1);
+    expect(capturedBody.items[0].quantity).toBe(1);
+    expect(capturedBody.items[0].title).toContain('2 productos');
+    expect(capturedBody.shipments.cost).toBe(9900);
+    expect(mpTotal(capturedBody)).toBe(169899);
+  });
+
+  test('con cupón y centavos: el ítem consolidado también es entero', async () => {
+    const order = { _id: 'o8', products: [{ product_id: 'p1', name: 'Hoodie', price: 79999.5, quantity: 1 }], coupon_code: 'BIENVENIDO15', coupon_total_discount: 11999.925, shipping_total: 0, total: 67999.575 };
+    await new MercadoPagoAdapter().initializePayment(order);
+    expect(allIntegers(capturedBody)).toBe(true);
+    expect(capturedBody.items[0].unit_price).toBe(68000);
+    expect(mpTotal(capturedBody)).toBe(68000);
+  });
+
+  test('precios enteros siguen itemizados tal cual', async () => {
+    const order = { _id: 'o9', products: [{ product_id: 'p1', name: 'A', price: 120000, quantity: 2 }, { product_id: 'p2', name: 'B', price: 90000, quantity: 1 }], coupon_total_discount: 0, shipping_total: 0, total: 330000 };
+    await new MercadoPagoAdapter().initializePayment(order);
+    expect(capturedBody.items).toHaveLength(2);
+    expect(mpTotal(capturedBody)).toBe(330000);
+  });
+});
