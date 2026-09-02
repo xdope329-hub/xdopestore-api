@@ -252,7 +252,8 @@ router.get('/slug/:slug', async (req, res) => {
     .populate('product_images')
     .populate('product_meta_image_id')
     .populate('tax_id')
-    .populate('attributes_ids');
+    .populate('attributes_ids')
+    .populate('variations.variation_images', 'asset_url original_url');
   if (!product) return res.status(404).json({ message: 'Product not found' });
   const userId = req.user?._id;
   const enriched = await attachReviews(product, userId);
@@ -300,7 +301,11 @@ router.get('/', async (req, res) => {
       .populate('categories', 'name slug')
       .populate('product_thumbnail_id', 'asset_url original_url')
       .populate('product_images', 'asset_url original_url')
-      .populate('attributes_ids'),
+      .populate('attributes_ids')
+      // Imágenes de variación: las tarjetas del listado cambian la foto al
+      // elegir color/talla. Sin poblar, `variation_image` llegaba como un id
+      // suelto y la miniatura nunca cambiaba.
+      .populate('variations.variation_images', 'asset_url original_url'),
   ]);
 
   // Lightweight review enrichment so list cards can show the real avg rating

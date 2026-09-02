@@ -2,19 +2,17 @@ const router = require('express').Router();
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const auth = require('../middleware/auth');
-const { findVariation, unitPrice } = require('../utils/cartPricing');
+const { findVariation, unitPrice, shapeCartVariation, CART_PRODUCT_POPULATE } = require('../utils/cartPricing');
 
+// Same shape as GET /cart (see cart.routes.js): variant with its photo.
 async function getCartItems(userId) {
-  const items = await Cart.find({ consumer_id: userId }).populate({
-    path: 'product_id',
-    populate: { path: 'product_thumbnail_id', select: 'asset_url original_url' },
-  });
+  const items = await Cart.find({ consumer_id: userId }).populate(CART_PRODUCT_POPULATE);
   return items.map(i => {
     const obj = i.toJSON ? i.toJSON() : i;
     const product = obj.product_id || {};
     obj.product = { ...product, product_thumbnail: product.product_thumbnail_id || null, sale_price: product.sale_price || product.price };
     obj.product_id = product._id || product.id;
-    obj.variation = findVariation(product, obj.variation_id);
+    obj.variation = shapeCartVariation(product, obj.variation_id);
     return obj;
   });
 }
