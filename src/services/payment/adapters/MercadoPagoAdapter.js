@@ -36,35 +36,48 @@ class MercadoPagoAdapter extends PaymentGateway {
     // Sin cupón: se envían los productos itemizados. Con cupón: MP no acepta
     // ítems negativos, así que se consolida en un solo ítem con el valor ya
     // descontado (el detalle queda en la orden y en el correo de la tienda).
+    // El peso colombiano no tiene centavos y MP rechaza decimales en COP
+    // ("unit_price must be an integer"): un precio como 79.999,50 (50% de
+    // 159.999) tumbaba el pago. Todo lo que viaja a MP se redondea a pesos.
+    const toPesos = (n) => Math.round(Number(n) || 0);
     const discount = Number(order.coupon_total_discount || 0);
-    const shippingCost = Number(order.shipping_total || 0);
-    const productsTotal = order.products.reduce((s, p) => s + Number(p.price) * Number(p.quantity), 0);
+    const shippingCost = toPesos(order.shipping_total);
+    const target = toPesos(order.total);
+    const itemsTarget = target - shippingCost;
+    const itemCount = order.products.reduce((s, p) => s + Number(p.quantity), 0);
+    const consolidated = (suffix = '') => [{
+      id: String(order._id),
+      title: `Pedido XDOPE (${itemCount} producto${itemCount === 1 ? '' : 's'}${suffix})`,
+      quantity: 1,
+      unit_price: itemsTarget,
+      currency_id: 'COP',
+    }];
 
     let items;
     if (discount > 0) {
-      const itemCount = order.products.reduce((s, p) => s + Number(p.quantity), 0);
-      items = [{
-        id: String(order._id),
-        title: `Pedido XDOPE (${itemCount} producto${itemCount === 1 ? '' : 's'}${order.coupon_code ? `, cupón ${order.coupon_code}` : ''})`,
-        quantity: 1,
-        unit_price: productsTotal - discount,
-        currency_id: 'COP',
-      }];
+      items = consolidated(order.coupon_code ? `, cupón ${order.coupon_code}` : '');
     } else {
       items = order.products.map(p => ({
         id: String(p.product_id),
         title: p.name,
         quantity: Number(p.quantity),
-        unit_price: Number(p.price),
+        unit_price: toPesos(p.price),
         currency_id: 'COP',
       }));
+      // Precios con centavos: al redondear cada unidad la suma puede
+      // desviarse del total real por unos pesos. Antes que cobrar un valor
+      // distinto al del checkout, se consolida en un solo ítem por el total.
+      // Solo cubre desvíos de redondeo (máximo medio peso por unidad); una
+      // diferencia mayor es una orden inconsistente y la frena la guardia.
+      const itemized = items.reduce((s, it) => s + it.unit_price * it.quantity, 0);
+      if (itemized !== itemsTarget && Math.abs(itemized - itemsTarget) <= itemCount) items = consolidated();
     }
 
     // Verificación de consistencia: ítems + envío == total de la orden.
     // Si algún cambio futuro rompe la fórmula, es mejor frenar aquí que
     // cobrar un valor distinto al mostrado en el checkout.
     const itemsTotal = items.reduce((s, it) => s + it.unit_price * it.quantity, 0);
-    if (Math.round(itemsTotal + shippingCost) !== Math.round(Number(order.total))) {
+    if (itemsTotal + shippingCost !== target || items.some((it) => !Number.isInteger(it.unit_price) || it.unit_price <= 0)) {
       throw new Error(`Preferencia MP inconsistente: items ${itemsTotal} + envío ${shippingCost} != total ${order.total}`);
     }
 

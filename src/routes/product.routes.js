@@ -85,6 +85,54 @@ async function resolveAttributesFromVariations(product) {
   return product;
 }
 
+/**
+ * Batch version for listings (home, collections, wishlist): ONE Attribute
+ * query for the whole page. Products without linked `attributes_ids` used
+ * to fall back to attributes derived from their variations with a hard-coded
+ * "rectangle" style, so the same "Color" attribute showed as text buttons on
+ * some cards and as color circles on others (and on the product page, which
+ * already resolved the catalog). Now every product uses the catalog's style
+ * and hex colors.
+ */
+async function resolveAttributesForProducts(products) {
+  const hasAttributes = (obj) => Array.isArray(obj.attributes_ids) && obj.attributes_ids.length > 0 && obj.attributes_ids[0]?.name;
+  const valueIdsOf = (obj) => {
+    const ids = new Set();
+    (obj.variations || []).forEach((v) => (v.attribute_values || []).forEach((av) => {
+      const id = av.id || av._id;
+      if (id && mongoose.Types.ObjectId.isValid(String(id))) ids.add(String(id));
+    }));
+    return ids;
+  };
+
+  // Never mutate the caller's objects (plain inputs are copied; documents
+  // are serialized fresh by toJSON).
+  const plain = products.map((p) => (p && p.toJSON ? p.toJSON() : p ? { ...p } : p));
+  const pending = plain.filter((obj) => obj && !hasAttributes(obj));
+  const allIds = new Set();
+  pending.forEach((obj) => valueIdsOf(obj).forEach((id) => allIds.add(id)));
+  if (!allIds.size) return plain;
+
+  const attrs = await Attribute.find({ 'attribute_values._id': { $in: Array.from(allIds).map((id) => new mongoose.Types.ObjectId(id)) } });
+  const attrByValueId = new Map();
+  attrs.forEach((attr) => {
+    const doc = attr.toJSON ? attr.toJSON() : attr;
+    (doc.attribute_values || []).forEach((av) => attrByValueId.set(String(av._id || av.id), doc));
+  });
+
+  pending.forEach((obj) => {
+    const seen = new Set();
+    const resolved = [];
+    valueIdsOf(obj).forEach((id) => {
+      const attr = attrByValueId.get(id);
+      const key = attr ? String(attr._id || attr.id) : null;
+      if (attr && !seen.has(key)) { seen.add(key); resolved.push(attr); }
+    });
+    if (resolved.length) obj.attributes_ids = resolved;
+  });
+  return plain;
+}
+
 function paginate(query, req) {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.paginate) || 15;
@@ -171,6 +219,7 @@ async function buildFilter(query) {
 }
 
 router.buildFilter = buildFilter; // exposed for focused unit tests
+router.resolveAttributesForProducts = resolveAttributesForProducts; // shared with wishlist listing
 
 // Fetch review stats and inject into product object
 async function attachReviews(product, userId) {
@@ -319,7 +368,10 @@ router.get('/', async (req, res) => {
     : [];
   const statsMap = new Map(stats.map((s) => [String(s._id), s]));
 
-  const transformed = data.map((p) => {
+  // Same attribute catalog resolution as the product page, so every card
+  // renders the same selector style for the same attribute.
+  const withAttributes = await resolveAttributesForProducts(data);
+  const transformed = withAttributes.map((p) => {
     const obj = transformProduct(p);
     const s = statsMap.get(String(p._id));
     if (s) {
