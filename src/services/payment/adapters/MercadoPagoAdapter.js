@@ -84,10 +84,14 @@ class MercadoPagoAdapter extends PaymentGateway {
     };
 
     const result = await preference.create({ body });
-    // En producción usar result.init_point; en sandbox usar result.sandbox_init_point
+    // En producción usar result.init_point. Con MP_SANDBOX=true se prefiere
+    // sandbox_init_point, pero MP ya no lo devuelve en muchas cuentas (con
+    // credenciales de prueba, init_point ya abre un checkout de prueba), así
+    // que se cae a init_point en vez de devolver undefined.
     const redirect_url = process.env.MP_SANDBOX === 'true'
-      ? result.sandbox_init_point
+      ? (result.sandbox_init_point || result.init_point)
       : result.init_point;
+    if (!redirect_url) throw new Error('Mercado Pago no devolvió init_point para la preferencia');
 
     return { redirect_url, preference_id: result.id };
   }

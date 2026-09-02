@@ -9,13 +9,14 @@
  */
 
 let capturedBody;
+let mockPreferenceResponse;
 
 jest.mock('mercadopago', () => ({
   MercadoPagoConfig: jest.fn().mockImplementation(() => ({})),
   Preference: jest.fn().mockImplementation(() => ({
     create: async ({ body }) => {
       capturedBody = body;
-      return { id: 'pref_1', init_point: 'https://mp/init', sandbox_init_point: 'https://mp/sandbox' };
+      return mockPreferenceResponse;
     },
   })),
   Payment: jest.fn(),
@@ -38,6 +39,7 @@ beforeAll(() => ENV_KEYS.forEach((k) => (savedEnv[k] = process.env[k])));
 afterAll(() => ENV_KEYS.forEach((k) => (savedEnv[k] === undefined ? delete process.env[k] : (process.env[k] = savedEnv[k]))));
 
 beforeEach(() => {
+  mockPreferenceResponse = { id: 'pref_1', init_point: 'https://mp/init', sandbox_init_point: 'https://mp/sandbox' };
   capturedBody = undefined;
   process.env.MP_ACCESS_TOKEN = 'APP_USR-test';
   process.env.MP_SANDBOX = 'false';
@@ -75,6 +77,21 @@ describe('MercadoPagoAdapter.initializePayment', () => {
 
     const result = await new MercadoPagoAdapter().initializePayment(ORDER);
     expect(result.redirect_url).toBe('https://mp/sandbox');
+  });
+
+  test('sandbox flag falls back to init_point when MP omits sandbox_init_point', async () => {
+    process.env.MP_SANDBOX = 'true';
+    mockPreferenceResponse = { id: 'pref_1', init_point: 'https://mp/init' };
+
+    const result = await new MercadoPagoAdapter().initializePayment(ORDER);
+    expect(result.redirect_url).toBe('https://mp/init');
+  });
+
+  test('throws instead of returning undefined when MP returns no init_point', async () => {
+    process.env.MP_SANDBOX = 'true';
+    mockPreferenceResponse = { id: 'pref_1' };
+
+    await expect(new MercadoPagoAdapter().initializePayment(ORDER)).rejects.toThrow(/init_point/);
   });
 });
 
