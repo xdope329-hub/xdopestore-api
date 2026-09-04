@@ -144,7 +144,16 @@ router.put('/', auth, adminOnly, async (req, res) => {
     const incoming = req.body.values || req.body;
     const current = setting.values || {};
     for (const section of Object.keys(incoming)) {
-      current[section] = { ...(current[section] || {}), ...incoming[section] };
+      const value = incoming[section];
+      // Secciones que son listas (payment_methods) se reemplazan completas:
+      // fusionarlas como objeto las convertía en { 0: …, 1: … }, el GET ya no
+      // las reconocía como lista y las devolvía a los valores por defecto, así
+      // que desde el admin nunca se podía activar contra entrega.
+      if (Array.isArray(value) || Array.isArray(current[section]) || value === null || typeof value !== 'object') {
+        current[section] = value;
+      } else {
+        current[section] = { ...(current[section] || {}), ...value };
+      }
     }
     setting.values = current;
     setting.markModified('values');
