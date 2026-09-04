@@ -24,6 +24,13 @@ function normalizeAddressBody(body = {}) {
   delete out._method;
   delete out.country;
   delete out.state;
+  // Campos internos: nunca desde el cliente (el dueño lo fija la ruta; un
+  // PUT con user_id ajeno reasignaba la dirección a otro usuario).
+  ['user_id', '_id', 'id', 'createdAt', 'updatedAt', '__v'].forEach((k) => { delete out[k]; });
+
+  ['title', 'street', 'city'].forEach((k) => {
+    if (typeof out[k] === 'string') out[k] = out[k].trim();
+  });
 
   if (out.pincode !== undefined && out.pincode !== null) out.pincode = String(out.pincode);
   if (out.phone !== undefined && out.phone !== null) out.phone = String(out.phone);

@@ -17,8 +17,18 @@ const transformQuestion = (q) => {
   const obj = q.toJSON ? q.toJSON() : q;
   if (obj.createdAt !== undefined) obj.created_at = obj.createdAt;
   if (obj.updatedAt !== undefined) obj.updated_at = obj.updatedAt;
-  // expose product summary under the `product` alias the dashboard table expects
-  if (obj.product_id && typeof obj.product_id === 'object') obj.product = obj.product_id;
+  // `product` / `consumer`: objetos poblados (el admin lee product.name);
+  // `product_id` / `consumer_id`: siempre el id plano, para que la tienda
+  // pueda comparar con el usuario en sesión sin importar si vino poblado.
+  if (obj.product_id && typeof obj.product_id === 'object') {
+    obj.product = obj.product_id;
+    obj.product_id = String(obj.product_id._id || obj.product_id.id);
+  }
+  if (obj.consumer_id && typeof obj.consumer_id === 'object') {
+    obj.consumer = { id: obj.consumer_id._id || obj.consumer_id.id, name: obj.consumer_id.name };
+    obj.consumer_id = String(obj.consumer_id._id || obj.consumer_id.id);
+  }
+  obj.is_answered = !!(obj.answer && String(obj.answer).trim());
   return obj;
 };
 
@@ -259,9 +269,16 @@ router.get('/question-and-answer/:id', async (req, res) => {
 
 // POST /question-and-answer — customer posts a question (must be logged in)
 router.post('/question-and-answer', auth, async (req, res) => {
-  const { question, product_id } = req.body;
+  const { product_id } = req.body;
+  const question = typeof req.body.question === 'string' ? req.body.question.trim() : '';
   if (!question || !product_id) {
     return res.status(400).json({ message: 'question and product_id are required' });
+  }
+  // Una sola pregunta por producto y cliente: si ya hizo una puede editarla
+  // (mientras no esté respondida), no abrir otra.
+  const existing = await Question.findOne({ product_id, consumer_id: req.user._id });
+  if (existing) {
+    return res.status(409).json({ message: 'Ya publicaste una pregunta sobre este producto', question_id: existing._id });
   }
   const created = await Question.create({
     question,
@@ -487,10 +504,7 @@ router.get('/commissionHistory', emptyList);
 router.get('/withdrawRequest', emptyList);
 router.post('/withdrawRequest', auth, adminOnly, ok);
 
-// GET /refund
-router.get('/refund', emptyList);
-router.post('/refund', auth, adminOnly, ok);
-router.put('/refund/:id', auth, adminOnly, ok);
+// /refund vive en routes/refund.routes.js (solicitudes reales de reembolso).
 
 // GET /badge — counts for admin dashboard notification badges
 router.get('/badge', auth, adminOnly, async (req, res) => {
@@ -499,16 +513,23 @@ router.get('/badge', auth, adminOnly, async (req, res) => {
   const OrderStatus = require('../models/OrderStatus');
   // "Pedidos pendientes" = estado del PEDIDO pendiente, no del pago.
   const pendingStatus = await OrderStatus.findOne({ slug: 'pending' }, '_id');
-  const [unapprovedProducts, pendingOrders] = await Promise.all([
+  const Review = require('../models/Review');
+  const Refund = require('../models/Refund');
+  const { REVIEW_STATUS } = require('../utils/reviewModeration');
+  const [unapprovedProducts, pendingOrders, pendingReviews, pendingRefunds] = await Promise.all([
     Product.countDocuments({ is_approved: false }),
     pendingStatus ? Order.countDocuments({ status_id: pendingStatus._id }) : Promise.resolve(0),
+    Review.countDocuments({ status: REVIEW_STATUS.PENDING }),
+    Refund.countDocuments({ status: 'pending' }),
   ]);
   res.json({
     data: {
       product: { total_in_approved_products: unapprovedProducts },
       store: { total_in_approved_stores: 0 },
-      refund: { total_pending_refunds: 0 },
+      refund: { total_pending_refunds: pendingRefunds },
       withdraw_request: { total_pending_withdraw_requests: 0 },
+      // Reseñas esperando moderación: insignia del menú "Reseñas".
+      review: { total_pending_reviews: pendingReviews },
     },
   });
 });

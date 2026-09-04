@@ -84,18 +84,36 @@ async function sendOrderConfirmation({ order, consumer }) {
     <p>Hi${consumer.name ? ` ${consumer.name}` : ''}, we received your order <strong>#${order.order_number || order._id}</strong>.</p>
     ${orderItemsTable(order)}
     <p style="text-align:right;font-size:16px;"><strong>Total: $${formatMoney(order.total)}</strong></p>
-    <p><a href="${STORE_URL()}/account/orders" style="display:inline-block;background:#212121;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;">View order</a></p>
+    <p><a href="${STORE_URL()}/account/order" style="display:inline-block;background:#212121;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;">View order</a></p>
   `);
   return brevo.sendTransactionalEmail({ to: { email: consumer.email, name: consumer.name }, subject, htmlContent: html });
 }
 
-async function sendOrderStatusUpdate({ order, consumer, statusName }) {
+// Al ENTREGAR, el correo invita a calificar la compra. Solo para clientes
+// con cuenta: un pedido de invitado no puede reseñar (no hay usuario al que
+// atribuir la reseña).
+function rateYourPurchaseBlock(order) {
+  const items = (order.products || []).map((p) => `<li style="margin:4px 0;">${p.name || ''}</li>`).join('');
+  const link = `${STORE_URL()}/account/order/details/${order.order_number || order._id}`;
+  return `
+    <hr style="border:none;border-top:1px solid #eee;margin:24px 0;">
+    <h3 style="margin:0 0 8px;">How was your purchase?</h3>
+    <p style="margin:0 0 8px;">Your opinion helps other customers. Rate the products you received:</p>
+    <ul style="margin:0 0 16px;padding-left:20px;color:#444;">${items}</ul>
+    <p><a href="${link}" style="display:inline-block;background:#0da487;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;">Rate your purchase</a></p>
+    <p style="color:#666;font-size:13px;">Reviews are published after a quick check by our team.</p>
+  `;
+}
+
+async function sendOrderStatusUpdate({ order, consumer, statusName, statusSlug }) {
   if (!consumer?.email) return;
   const subject = `${STORE_NAME()}: Order ${order.order_number || order._id} — ${statusName}`;
+  const askForReview = statusSlug === 'delivered' && !order.is_guest;
   const html = wrapHtml(`
     <h2 style="margin-top:0;">Order update</h2>
     <p>Hi${consumer.name ? ` ${consumer.name}` : ''}, your order <strong>#${order.order_number || order._id}</strong> is now <strong>${statusName}</strong>.</p>
-    <p><a href="${STORE_URL()}/account/orders" style="display:inline-block;background:#212121;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;">View order</a></p>
+    <p><a href="${STORE_URL()}/account/order" style="display:inline-block;background:#212121;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;">View order</a></p>
+    ${askForReview ? rateYourPurchaseBlock(order) : ''}
   `);
   return brevo.sendTransactionalEmail({ to: { email: consumer.email, name: consumer.name }, subject, htmlContent: html });
 }

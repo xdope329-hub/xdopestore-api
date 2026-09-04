@@ -6,6 +6,7 @@ const Category = require('../models/Category');
 const Brand = require('../models/Brand');
 const Attribute = require('../models/Attribute');
 const Review = require('../models/Review');
+const { REVIEW_STATUS, statusSlug } = require('../utils/reviewModeration');
 const Order = require('../models/Order');
 const OrderStatus = require('../models/OrderStatus');
 const auth = require('../middleware/auth');
@@ -221,9 +222,11 @@ async function buildFilter(query) {
 router.buildFilter = buildFilter; // exposed for focused unit tests
 router.resolveAttributesForProducts = resolveAttributesForProducts; // shared with wishlist listing
 
-// Fetch review stats and inject into product object
+// Fetch review stats and inject into product object. Solo las reseñas
+// APROBADAS cuentan para el promedio y se listan; la del propio usuario se
+// devuelve aparte (en cualquier estado) para que pueda editarla.
 async function attachReviews(product, userId) {
-  const reviews = await Review.find({ product_id: product._id })
+  const reviews = await Review.find({ product_id: product._id, status: REVIEW_STATUS.APPROVED })
     .populate({ path: 'consumer_id', select: 'name profile_image_id', populate: { path: 'profile_image_id', select: 'original_url' } })
     .sort({ createdAt: -1 });
 
@@ -237,18 +240,30 @@ async function attachReviews(product, userId) {
   reviews.forEach(r => { if (r.rating >= 1 && r.rating <= 5) review_ratings[r.rating - 1]++; });
 
   let hasPurchased = false;
+  let ownReview = null;
   if (userId) {
     const delivered = await OrderStatus.findOne({ slug: 'delivered' });
-    hasPurchased = !!(await Order.findOne({
-      consumer_id: userId,
-      'products.product_id': product._id,
-      status_id: delivered?._id,
-    }));
+    [hasPurchased, ownReview] = await Promise.all([
+      Order.findOne({
+        consumer_id: userId,
+        'products.product_id': product._id,
+        status_id: delivered?._id,
+      }).then(Boolean),
+      Review.findOne({ product_id: product._id, consumer_id: userId }),
+    ]);
   }
-  const can_review = hasPurchased && !reviews.some(r => r.consumer_id?._id?.toString() === userId?.toString());
+  // Puede reseñar si compró y aún no lo hizo; si ya lo hizo, puede editar.
+  const can_review = hasPurchased;
 
-  const user_review = userId
-    ? reviews.find(r => r.consumer_id?._id?.toString() === userId.toString()) || null
+  const user_review = ownReview
+    ? {
+        id: ownReview._id,
+        rating: ownReview.rating,
+        description: ownReview.description,
+        status: ownReview.status,
+        status_slug: statusSlug(ownReview.status),
+        created_at: ownReview.createdAt,
+      }
     : null;
 
   const obj = product.toJSON ? product.toJSON() : product;
@@ -328,6 +343,7 @@ router.get('/', async (req, res) => {
     if (stars.length) {
       const threshold = Math.min(...stars);
       const eligible = await Review.aggregate([
+        { $match: { status: REVIEW_STATUS.APPROVED } },
         { $group: { _id: '$product_id', avg: { $avg: '$rating' } } },
         { $match: { avg: { $gte: threshold } } },
       ]);
@@ -362,7 +378,7 @@ router.get('/', async (req, res) => {
   const productIds = data.map((p) => p._id);
   const stats = productIds.length
     ? await Review.aggregate([
-        { $match: { product_id: { $in: productIds } } },
+        { $match: { product_id: { $in: productIds }, status: REVIEW_STATUS.APPROVED } },
         { $group: { _id: '$product_id', count: { $sum: 1 }, avg: { $avg: '$rating' } } },
       ])
     : [];

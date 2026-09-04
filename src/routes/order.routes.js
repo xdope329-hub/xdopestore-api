@@ -31,7 +31,10 @@ function transformProduct(p) {
     sku: line.sku,
     variation_attributes: line.variation_attributes,
     product_thumbnail: productDoc?.product_thumbnail_id || null,
-    is_return: productDoc?.is_return ?? 1,
+    // Siempre 1/0: el producto lo guarda como booleano y el detalle del pedido
+    // de la tienda compara con `=== 1` (con `true` el botón Reembolso nunca
+    // se habilitaba).
+    is_return: Number(productDoc?.is_return ?? 1),
     pivot: {
       single_price: item.price,
       quantity: item.quantity,
@@ -233,6 +236,7 @@ async function handleStatusUpdate(req, res) {
         order: order.toJSON(),
         consumer: order.consumer_id,
         statusName: order.status_id?.name || 'updated',
+        statusSlug: order.status_id?.slug || null,
       })
       .catch(mail.logMailError('order-status-update'));
   }

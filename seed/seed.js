@@ -780,7 +780,9 @@ async function seed() {
   console.log(`Productos creados: ${products.length}`);
 
   // ── 12. Reseñas ──────────────────────────────────────────────────────────────
-  await Review.insertMany([
+  // Las de la semilla nacen APROBADAS (status 1) para que el catálogo de QA
+  // muestre calificaciones; las reales entran en pendiente hasta moderarse.
+  await Review.insertMany(([
     { product_id: products[0]._id,  consumer_id: consumerUser._id, rating: 5, description: '¡Vestido absolutamente hermoso! El estampado floral es vibrante y la tela increíblemente suave. Talla exacta y muy favorecedor. Lo usé en un evento al aire libre y recibí elogios toda la noche.' },
     { product_id: products[0]._id,  consumer_id: consumerUser._id, rating: 4, description: 'Vestido de gran calidad. El lazo ajustable es perfecto. Los colores son exactamente como los de la foto. Me quedó bien subiendo media talla.' },
     { product_id: products[1]._id,  consumer_id: consumerUser._id, rating: 5, description: 'El vestido slip de satén es pura elegancia. El corte al bies es muy favorecedor y la calidad del satén es premium, no se ve barato. Perfecto para ocasiones especiales.' },
@@ -796,7 +798,7 @@ async function seed() {
     { product_id: products[24]._id, consumer_id: consumerUser._id, rating: 5, description: 'Los botines Chelsea valen totalmente el precio premium. La costura Goodyear significa que se pueden resuelas — estos durarán 20+ años. La calidad del cuero es excepcional.' },
     { product_id: products[25]._id, consumer_id: consumerUser._id, rating: 5, description: 'Las zapatillas de running más rápidas que he usado. El retorno de energía del boost es notorio inmediatamente. Los materiales reciclados son un plus enorme. Talla exacta.' },
     { product_id: products[26]._id, consumer_id: consumerUser._id, rating: 5, description: 'Este set es tan cómodo que lo uso como ropa de casa y también para entrenar. El tech fleece es grueso y cálido sin ser sofocante. El jogger cónico luce mucho más arreglado.' },
-  ]);
+  ]).map((r) => ({ ...r, status: 1, moderated_at: new Date() })));
   console.log('Reseñas creadas');
 
   // ── 13. Carrito, Pedidos, Listas de Deseos ───────────────────────────────────
