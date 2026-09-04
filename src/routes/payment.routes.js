@@ -181,8 +181,15 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
   }
   if (!built) return res.status(422).json({ message: 'El carrito está vacío' });
 
-  const { products, amount, total, pendingStatus, billing_address, shipping_address,
+  const { products, amount, total, pendingStatus, shipping_address,
           payment_method, coupon_total_discount, coupon_code, shipping_total, notes } = built;
+
+  // Sin dirección de envío no hay pedido: antes un id inexistente (o un
+  // invitado sin direcciones) creaba la orden con direcciones vacías y sin
+  // costo de envío. Sin facturación se factura a la dirección de envío.
+  if (!shipping_address) return res.status(422).json({ message: 'Selecciona una dirección de envío para realizar tu pedido' });
+  const billing_address = built.billing_address || shipping_address;
+  if (!payment_method) return res.status(422).json({ message: 'Elige un método de pago para realizar tu pedido' });
 
   const order = await Order.create({
     consumer_id: req.user ? req.user._id : null,
@@ -271,8 +278,10 @@ router.get('/verify/:orderId', optionalAuth, async (req, res) => {
   let gatewayStatus = order.payment_status;
 
   // Si el webhook ya actualizó la orden, retornamos ese estado directamente
+  // `order_number`: la página de éxito lo muestra al cliente (antes no viajaba
+  // y el número quedaba en blanco).
   if (order.payment_status !== 'pending') {
-    return res.json({ order_id: String(order._id), payment_status: order.payment_status, order_status: order.status_id });
+    return res.json({ order_id: String(order._id), order_number: order.order_number, payment_status: order.payment_status, order_status: order.status_id });
   }
 
   // Si aún está pending, consultamos a la pasarela. Misma regla que el
@@ -294,7 +303,7 @@ router.get('/verify/:orderId', optionalAuth, async (req, res) => {
     console.error('[payment/verify] error:', err.message);
   }
 
-  res.json({ order_id: String(order._id), payment_status: gatewayStatus, order_status: orderStatus });
+  res.json({ order_id: String(order._id), order_number: order.order_number, payment_status: gatewayStatus, order_status: orderStatus });
 });
 
 module.exports = router;
