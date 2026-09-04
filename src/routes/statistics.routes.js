@@ -11,7 +11,7 @@ const adminOnly = require('../middleware/adminOnly');
 router.get('/count', auth, adminOnly, async (req, res) => {
   // Un pago aprobado deja payment_status='completed' (ver payment.routes.js).
   const PAID = 'completed';
-  const [products, orders, users, reviews, revenueAgg, statusAgg, statuses, mercadopagoPaid] = await Promise.all([
+  const [products, orders, users, reviews, revenueAgg, statusAgg, statuses, mercadopagoPaid, reviewAgg] = await Promise.all([
     Product.countDocuments(),
     Order.countDocuments(),
     User.countDocuments(),
@@ -23,7 +23,11 @@ router.get('/count', auth, adminOnly, async (req, res) => {
     OrderStatus.find({}, 'slug').lean(),
     // Pestaña "Mercado Pago pagados" del admin.
     Order.countDocuments({ payment_method: 'mercadopago', payment_status: PAID }),
+    // Pestañas de moderación de reseñas (pendiente / aprobada / rechazada).
+    Review.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
   ]);
+  const reviewsByStatus = {};
+  reviewAgg.forEach((r) => { reviewsByStatus[Number(r._id)] = r.count; });
 
   const slugById = {};
   statuses.forEach((st) => { slugById[String(st._id)] = st.slug; });
@@ -38,6 +42,9 @@ router.get('/count', auth, adminOnly, async (req, res) => {
     total_orders: orders,
     total_users: users,
     total_reviews: reviews,
+    total_pending_reviews: reviewsByStatus[0] || 0,
+    total_approved_reviews: reviewsByStatus[1] || 0,
+    total_rejected_reviews: reviewsByStatus[2] || 0,
     total_stores: 0,
     total_revenue: revenueAgg[0]?.total || 0,
     total_pending_orders: statusMap['pending'] || 0,

@@ -69,7 +69,8 @@ function buildStatsApp({ orders = [], statuses = [], mpPaidCount = 0 } = {}) {
   jest.doMock("../src/models/Order", () => Order);
   jest.doMock("../src/models/Product", () => mk(3));
   jest.doMock("../src/models/User", () => mk(4));
-  jest.doMock("../src/models/Review", () => mk(5));
+  // Reseñas: total + desglose por estado de moderación (pendiente/aprobada/rechazada).
+  jest.doMock("../src/models/Review", () => ({ ...mk(5), aggregate: jest.fn(async () => [{ _id: 0, count: 2 }, { _id: 1, count: 3 }]) }));
   jest.doMock("../src/models/OrderStatus", () => ({ find: () => ({ lean: async () => statuses }) }));
   const { mockAuth, buildApp } = require("./_support/helpers");
   mockAuth("admin");
@@ -130,6 +131,11 @@ describe("GET /statistics/count", () => {
     const res = await request(app).get("/statistics/count");
     expect(res.status).toBe(200);
     expect(res.body.total_mercadopago_paid_orders).toBe(1);
+    // review moderation tabs
+    expect(res.body.total_reviews).toBe(5);
+    expect(res.body.total_pending_reviews).toBe(2);
+    expect(res.body.total_approved_reviews).toBe(3);
+    expect(res.body.total_rejected_reviews).toBe(0);
     // counted with the status a gateway approval actually writes
     expect(calls.countDocuments).toContainEqual({ payment_method: "mercadopago", payment_status: "completed" });
   });

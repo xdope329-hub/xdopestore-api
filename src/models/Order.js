@@ -16,6 +16,9 @@ const orderProductSchema = new mongoose.Schema({
   quantity: Number,
   price: Number,
   sub_total: Number,
+  // Estado de la solicitud de reembolso de esta línea (models/Refund.js):
+  // null | pending | approved | rejected. Lo muestra el detalle del pedido.
+  refund_status: { type: String, default: null },
 }, { _id: false });
 
 // Stores a snapshot of the address at the time the order was placed.

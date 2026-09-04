@@ -96,6 +96,7 @@ app.use('/orderStatus', require('./src/routes/orderStatus.routes'));
 app.use('/statistics', require('./src/routes/statistics.routes'));
 app.use('/dashboard', require('./src/routes/statistics.routes'));
 app.use('/presets', require('./src/routes/preset.routes'));
+app.use('/refund', require('./src/routes/refund.routes'));
 app.use('/', require('./src/routes/cart.sync.routes'));
 app.use('/', require('./src/routes/misc.routes'));
 

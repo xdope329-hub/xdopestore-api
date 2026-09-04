@@ -90,7 +90,7 @@ describe('cupones: vista de cliente vs catálogo', () => {
 describe('reseñas: sin asignación masiva', () => {
   test('status y consumer_id del body se ignoran', async () => {
     jest.resetModules();
-    const Review = { create: jest.fn(async (d) => ({ _id: id(5), ...d })) };
+    const Review = { create: jest.fn(async (d) => ({ _id: id(5), ...d })), findOne: jest.fn(async () => null) };
     jest.doMock('../src/models/Review', () => Review);
     jest.doMock('../src/models/OrderStatus', () => ({ findOne: jest.fn(async () => ({ _id: id(9) })) }));
     jest.doMock('../src/models/Order', () => ({ findOne: jest.fn(async () => ({ _id: id(8) })) }));
@@ -99,7 +99,8 @@ describe('reseñas: sin asignación masiva', () => {
     const app = buildApp([{ prefix: '/review', modulePath: '../src/routes/review.routes' }]);
     const res = await request(app).post('/review').send({ product_id: id(1), rating: 5, description: 'Genial', status: 1, consumer_id: id(7), is_approved: true });
     expect(res.status).toBe(201);
-    expect(Review.create).toHaveBeenCalledWith({ product_id: id(1), rating: 5, description: 'Genial', review_image_id: undefined, consumer_id: ME });
+    // El estado siempre nace en pendiente (0), diga lo que diga el body.
+    expect(Review.create).toHaveBeenCalledWith({ product_id: id(1), rating: 5, description: 'Genial', review_image_id: undefined, consumer_id: ME, status: 0 });
   });
 });
 
