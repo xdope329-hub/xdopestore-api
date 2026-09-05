@@ -19,6 +19,11 @@ const orderProductSchema = new mongoose.Schema({
   // Estado de la solicitud de reembolso de esta línea (models/Refund.js):
   // null | pending | approved | rejected. Lo muestra el detalle del pedido.
   refund_status: { type: String, default: null },
+  // Momento en que el cliente calificó esta compra (POST /review). Se conserva
+  // aunque el administrador apruebe, rechace o ELIMINE la reseña: una compra
+  // calificada no vuelve a aparecer en "Califica tu compra" ni admite otra
+  // reseña (routes/review.routes.js, utils/reviewModeration.js).
+  reviewed_at: { type: Date, default: null },
 }, { _id: false });
 
 // Stores a snapshot of the address at the time the order was placed.

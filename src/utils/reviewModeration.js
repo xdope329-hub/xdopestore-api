@@ -67,6 +67,8 @@ function validateReviewInput(body = {}, { partial = false } = {}) {
  * `orders` llegan con `products[].product_id` poblado (o como id suelto);
  * `reviews` son las reseñas del cliente (cualquier estado). Un producto que
  * aparece en varios pedidos se lista una sola vez (el pedido más reciente).
+ * Una línea con `reviewed_at` ya fue calificada: se omite aunque el
+ * administrador haya eliminado la reseña después (models/Order.js).
  */
 function pendingReviewItems(orders = [], reviews = []) {
   const reviewed = new Set(reviews.map((r) => String(r.product_id?._id || r.product_id)));
@@ -74,6 +76,7 @@ function pendingReviewItems(orders = [], reviews = []) {
   const items = [];
   for (const order of orders) {
     for (const line of order.products || []) {
+      if (line.reviewed_at) continue;
       const product = line.product_id && typeof line.product_id === 'object' ? line.product_id : null;
       const productId = String(product?._id || line.product_id || '');
       if (!productId || reviewed.has(productId) || seen.has(productId)) continue;

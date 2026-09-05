@@ -4,7 +4,9 @@
  *  - el cliente crea en pendiente, una por producto, con datos validados;
  *  - editar una reseña la devuelve a pendiente;
  *  - aprobar/rechazar es exclusivo de administración;
- *  - /review/pending lista lo entregado y aún sin reseñar.
+ *  - /review/pending lista lo entregado y aún sin reseñar;
+ *  - crear o eliminar una reseña marca la compra como calificada
+ *    (products[].reviewed_at) para que no se pueda reseñar dos veces.
  * Sin base de datos: modelos simulados.
  */
 
@@ -33,7 +35,7 @@ function setup(role, models = {}) {
     create: jest.fn(async (d) => ({ _id: id(5), ...d, toJSON() { return { _id: id(5), ...d }; } })),
     ...models.Review,
   };
-  const Order = { findOne: jest.fn(async () => ({ _id: id(8) })), find: jest.fn(() => chain([])), ...models.Order };
+  const Order = { findOne: jest.fn(async () => ({ _id: id(8) })), find: jest.fn(() => chain([])), updateMany: jest.fn(async () => ({ modifiedCount: 1 })), ...models.Order };
   const OrderStatus = { findOne: jest.fn(async () => ({ _id: id(9), slug: 'delivered' })), ...models.OrderStatus };
   jest.doMock('../src/models/Review', () => Review);
   jest.doMock('../src/models/Order', () => Order);
@@ -79,11 +81,20 @@ describe('listado', () => {
 
 describe('crear', () => {
   test('queda pendiente y solo con los campos permitidos', async () => {
-    const { app, Review } = setup('consumer');
+    const { app, Review, Order } = setup('consumer');
     const res = await request(app).post('/review').send({ product_id: id(1), rating: '5', description: '  Genial  ', status: 1, consumer_id: id(7) });
     expect(res.status).toBe(201);
     expect(res.body.message).toMatch(/revisad/);
     expect(Review.create).toHaveBeenCalledWith({ product_id: id(1), rating: 5, description: 'Genial', review_image_id: undefined, consumer_id: ME, status: 0 });
+    // La compra queda marcada como calificada (products[].reviewed_at) en
+    // todas las líneas entregadas de ese producto que aún no lo estaban.
+    expect(Order.updateMany).toHaveBeenCalledTimes(1);
+    const [filter, update, options] = Order.updateMany.mock.calls[0];
+    expect(filter).toMatchObject({ consumer_id: ME, status_id: id(9) });
+    expect(String(filter['products.product_id'])).toBe(id(1));
+    expect(update).toEqual({ $set: { 'products.$[line].reviewed_at': expect.any(Date) } });
+    expect(String(options.arrayFilters[0]['line.product_id'])).toBe(id(1));
+    expect(options.arrayFilters[0]['line.reviewed_at']).toBeNull();
   });
 
   test('calificación inválida → 422', async () => {
@@ -105,6 +116,18 @@ describe('crear', () => {
     const res = await request(app).post('/review').send({ product_id: id(1), rating: 5 });
     expect(res.status).toBe(409);
     expect(Review.create).not.toHaveBeenCalled();
+  });
+
+  test('compra ya calificada (la reseña la eliminó el admin) → 409 y no se crea otra', async () => {
+    // Compró el producto, pero todas sus líneas entregadas ya tienen reviewed_at.
+    const findOne = jest.fn(async (filter) => (filter.products ? null : { _id: id(8) }));
+    const { app, Review, Order } = setup('consumer', { Order: { findOne } });
+    const res = await request(app).post('/review').send({ product_id: id(1), rating: 5 });
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/calificaste/);
+    expect(findOne).toHaveBeenLastCalledWith({ consumer_id: ME, status_id: id(9), products: { $elemMatch: { product_id: id(1), reviewed_at: null } } });
+    expect(Review.create).not.toHaveBeenCalled();
+    expect(Order.updateMany).not.toHaveBeenCalled();
   });
 });
 
@@ -163,6 +186,41 @@ describe('moderar', () => {
   });
 });
 
+describe('eliminar', () => {
+  const stored = (owner = ME) => ({ _id: id(5), consumer_id: { toString: () => owner }, product_id: id(1), createdAt: new Date('2026-02-01'), deleteOne: jest.fn(async () => ({})) });
+
+  test('el admin la elimina, pero la compra sigue marcada como calificada', async () => {
+    const review = stored();
+    const { app, Order } = setup('admin', { Review: { findById: jest.fn(async () => review) } });
+    const res = await request(app).delete(`/review/${id(5)}`);
+    expect(res.status).toBe(200);
+    expect(review.deleteOne).toHaveBeenCalled();
+    expect(Order.updateMany).toHaveBeenCalledTimes(1);
+    const [filter, update, options] = Order.updateMany.mock.calls[0];
+    expect(filter.consumer_id).toBe(review.consumer_id);
+    expect(filter.status_id).toBe(id(9));
+    expect(String(filter['products.product_id'])).toBe(id(1));
+    expect(update).toEqual({ $set: { 'products.$[line].reviewed_at': review.createdAt } });
+    expect(options.arrayFilters[0]['line.reviewed_at']).toBeNull();
+  });
+
+  test('el autor también puede eliminarla y tampoco reabre la compra', async () => {
+    const review = stored();
+    const { app, Order } = setup('consumer', { Review: { findById: jest.fn(async () => review) } });
+    expect((await request(app).delete(`/review/${id(5)}`)).status).toBe(200);
+    expect(Order.updateMany).toHaveBeenCalledTimes(1);
+    expect(review.deleteOne).toHaveBeenCalled();
+  });
+
+  test('otro cliente no puede eliminarla', async () => {
+    const review = stored(id(77));
+    const { app, Order } = setup('consumer', { Review: { findById: jest.fn(async () => review) } });
+    expect((await request(app).delete(`/review/${id(5)}`)).status).toBe(403);
+    expect(review.deleteOne).not.toHaveBeenCalled();
+    expect(Order.updateMany).not.toHaveBeenCalled();
+  });
+});
+
 describe('pendientes de calificar', () => {
   test('lista lo entregado que aún no tiene reseña', async () => {
     const orders = [{ _id: id(100), order_number: 2001, products: [{ product_id: { _id: id(1), name: 'Camisa', slug: 'camisa', product_thumbnail_id: null } }, { product_id: { _id: id(2), name: 'Jean', slug: 'jean', product_thumbnail_id: null } }] }];
@@ -174,6 +232,14 @@ describe('pendientes de calificar', () => {
     expect(res.status).toBe(200);
     expect(Order.find).toHaveBeenCalledWith({ consumer_id: ME, status_id: id(9) });
     expect(res.body.data).toEqual([{ order_id: id(100), order_number: 2001, product: { id: id(2), name: 'Jean', slug: 'jean', product_thumbnail: null } }]);
+  });
+
+  test('una compra ya calificada no vuelve a listarse aunque la reseña se haya eliminado', async () => {
+    const orders = [{ _id: id(100), order_number: 2001, products: [{ product_id: { _id: id(1), name: 'Camisa', slug: 'camisa', product_thumbnail_id: null }, reviewed_at: new Date('2026-02-01') }, { product_id: { _id: id(2), name: 'Jean', slug: 'jean', product_thumbnail_id: null } }] }];
+    const { app } = setup('consumer', { Order: { find: jest.fn(() => chain(orders)) } });
+    const res = await request(app).get('/review/pending');
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((i) => i.product.id)).toEqual([id(2)]);
   });
 
   test('sin estado "delivered" configurado responde vacío', async () => {

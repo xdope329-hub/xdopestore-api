@@ -41,8 +41,9 @@ const DEFAULT_SETTING_VALUES = {
     { name: 'mercadopago', status: 1 },
   ],
   payment_methods_migrated_v2: true,
-  // Floating WhatsApp button on the storefront home page. Edited from the
-  // admin under Settings -> WhatsApp; off until a number is saved.
+  // Floating WhatsApp button on every storefront page (plus the footer's
+  // social links). Edited from the admin under Settings -> WhatsApp; off
+  // until a number is saved.
   whatsapp: {
     status: 0,
     number: '',
