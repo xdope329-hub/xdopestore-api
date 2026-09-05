@@ -53,6 +53,22 @@ const populateReview = (q) =>
     .populate({ path: 'consumer_id', select: 'name profile_image_id', populate: { path: 'profile_image_id', select: 'original_url' } })
     .populate({ path: 'product_id', select: 'name slug product_thumbnail_id', populate: { path: 'product_thumbnail_id', select: 'original_url' } });
 
+// Marca como calificadas TODAS las líneas entregadas de ese producto para el
+// cliente (`products[].reviewed_at`, models/Order.js). Se llama al crear la
+// reseña y también al eliminarla, para que las reseñas anteriores a esta marca
+// tampoco reabran la compra. Con la marca, la compra deja de aparecer en
+// /review/pending y el cliente no puede volver a reseñarla, la apruebe,
+// rechace o elimine quien sea.
+async function markPurchaseReviewed({ consumerId, productId, deliveredStatusId, at = new Date() }) {
+  if (!deliveredStatusId || !consumerId || !productId) return;
+  const product = new mongoose.Types.ObjectId(String(productId));
+  await Order.updateMany(
+    { consumer_id: consumerId, status_id: deliveredStatusId, 'products.product_id': product },
+    { $set: { 'products.$[line].reviewed_at': at } },
+    { arrayFilters: [{ 'line.product_id': product, 'line.reviewed_at': null }] }
+  );
+}
+
 // GET /review — público: solo reseñas APROBADAS. Administrador: todas, con
 // filtro opcional ?status=pending|approved|rejected y búsqueda por texto.
 router.get('/', optionalAuth, async (req, res) => {
@@ -124,6 +140,15 @@ router.post('/', auth, publicFormLimiter, async (req, res) => {
   const existing = await Review.findOne({ product_id, consumer_id: req.user._id });
   if (existing) return res.status(409).json({ message: 'Ya dejaste una reseña de este producto. Puedes editarla.' });
 
+  // Una compra ya calificada no admite otra reseña, aunque el administrador
+  // haya eliminado la anterior (products[].reviewed_at, models/Order.js).
+  const unreviewedPurchase = await Order.findOne({
+    consumer_id: req.user._id,
+    status_id: delivered?._id,
+    products: { $elemMatch: { product_id, reviewed_at: null } },
+  });
+  if (!unreviewedPurchase) return res.status(409).json({ message: 'Ya calificaste este producto en tu compra.' });
+
   // Solo los campos que el cliente puede fijar: nunca `status` ni otros
   // internos por asignación masiva.
   const { review_image_id } = req.body;
@@ -135,6 +160,7 @@ router.post('/', auth, publicFormLimiter, async (req, res) => {
     consumer_id: req.user._id,
     status: REVIEW_STATUS.PENDING,
   });
+  await markPurchaseReviewed({ consumerId: req.user._id, productId: product_id, deliveredStatusId: delivered?._id, at: review.createdAt });
   const payload = review.toJSON ? review.toJSON() : review;
   res.status(201).json({ ...payload, message: 'Gracias por tu opinión. Se publicará cuando sea revisada.' });
 });
@@ -176,6 +202,10 @@ router.delete('/:id', auth, async (req, res) => {
   const isAdmin = isAdminUser(req.user);
   if (!isAdmin && review.consumer_id.toString() !== req.user._id.toString())
     return res.status(403).json({ message: 'No autorizado' });
+  // Eliminar no "desmarca" la compra: la línea del pedido conserva su
+  // calificación para que el cliente no pueda volver a reseñarla.
+  const delivered = await OrderStatus.findOne({ slug: 'delivered' });
+  await markPurchaseReviewed({ consumerId: review.consumer_id, productId: review.product_id, deliveredStatusId: delivered?._id, at: review.createdAt });
   await review.deleteOne();
   res.json({ message: 'Review eliminada' });
 });

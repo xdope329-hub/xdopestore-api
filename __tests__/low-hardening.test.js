@@ -93,7 +93,9 @@ describe('reseñas: sin asignación masiva', () => {
     const Review = { create: jest.fn(async (d) => ({ _id: id(5), ...d })), findOne: jest.fn(async () => null) };
     jest.doMock('../src/models/Review', () => Review);
     jest.doMock('../src/models/OrderStatus', () => ({ findOne: jest.fn(async () => ({ _id: id(9) })) }));
-    jest.doMock('../src/models/Order', () => ({ findOne: jest.fn(async () => ({ _id: id(8) })) }));
+    // findOne cubre la compra entregada y la línea aún sin calificar; updateMany
+    // es la marca products[].reviewed_at que deja la reseña creada.
+    jest.doMock('../src/models/Order', () => ({ findOne: jest.fn(async () => ({ _id: id(8) })), updateMany: jest.fn(async () => ({ modifiedCount: 1 })) }));
     const { mockAuth, buildApp } = require('./_support/helpers');
     mockAuth('consumer');
     const app = buildApp([{ prefix: '/review', modulePath: '../src/routes/review.routes' }]);

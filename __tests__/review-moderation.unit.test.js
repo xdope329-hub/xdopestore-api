@@ -74,6 +74,15 @@ describe('productos pendientes de reseña', () => {
     expect(items[1].product).toEqual({ id: id(3), name: 'Sin poblar', slug: null, product_thumbnail: null });
   });
 
+  test('una línea marcada como calificada (reviewed_at) no se lista aunque ya no exista la reseña', () => {
+    const marked = [
+      { _id: id(100), order_number: 2002, products: [{ product_id: product(1, 'Camisa'), reviewed_at: new Date('2026-02-01') }, { product_id: product(2, 'Jean') }] },
+      // El mismo producto en un pedido anterior sin calificar sí se lista.
+      { _id: id(101), order_number: 2001, products: [{ product_id: product(1, 'Camisa') }] },
+    ];
+    expect(mod.pendingReviewItems(marked, []).map((i) => [i.order_number, i.product.id])).toEqual([[2002, id(2)], [2001, id(1)]]);
+  });
+
   test('sin pedidos entregados no hay nada que calificar', () => {
     expect(mod.pendingReviewItems([], [])).toEqual([]);
     expect(mod.pendingReviewItems(undefined, undefined)).toEqual([]);

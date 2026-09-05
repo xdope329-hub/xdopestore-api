@@ -32,6 +32,29 @@ describe("normalizeProductBody", () => {
     expect(body).toHaveProperty("meta_description", "");
   });
 
+  test("keeps only valid, unique related / cross-sell product ids and never the product itself", () => {
+    const self = "64b0000000000000000000aa";
+    const other = "64b0000000000000000000bb";
+    const body = normalizeProductBody(
+      {
+        name: "P",
+        related_products: [other, other, "", null, "nope", self, { id: "64b0000000000000000000cc" }],
+        cross_sell_products: "64b0000000000000000000dd",
+        is_random_related_products: 0,
+      },
+      { selfId: self }
+    );
+    expect(body.related_products).toEqual([other, "64b0000000000000000000cc"]);
+    expect(body.cross_sell_products).toEqual(["64b0000000000000000000dd"]);
+    expect(body.is_random_related_products).toBe(0);
+  });
+
+  test("leaves related products untouched when the form did not send them", () => {
+    const body = normalizeProductBody({ name: "P" });
+    expect(body).not.toHaveProperty("related_products");
+    expect(body).not.toHaveProperty("cross_sell_products");
+  });
+
   test("filters empty entries out of arrays", () => {
     const body = normalizeProductBody({
       name: "P",

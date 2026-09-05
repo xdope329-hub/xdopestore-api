@@ -67,6 +67,14 @@ const productSchema = new mongoose.Schema({
   brand_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Brand', default: null },
   categories: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Category' }],
   tags: [String],
+  // Productos relacionados / venta cruzada elegidos en el admin (Setup). Con
+  // `is_random_related_products` (valor por defecto) la tienda recibe hasta 6
+  // productos al azar de las mismas categorías (routes/product.routes.js) en
+  // lugar de la lista. Sin estos campos en el esquema Mongoose descartaba la
+  // selección al crear o editar el producto.
+  is_random_related_products: { type: Boolean, default: true },
+  related_products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+  cross_sell_products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
   tax_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Tax', default: null },
   attributes_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Attribute' }],
   product_thumbnail_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment', default: null },
