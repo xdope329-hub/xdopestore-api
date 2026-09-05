@@ -246,4 +246,9 @@ async function handleStatusUpdate(req, res) {
   res.json(payload);
 }
 
+// Compartido con GET /trackOrder (misc.routes.js): el seguimiento público
+// devuelve exactamente la misma vista del pedido que el detalle del cliente.
+router.transformOrder = transformOrder;
+router.populateDetail = populateDetail;
+
 module.exports = router;

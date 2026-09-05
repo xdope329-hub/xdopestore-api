@@ -1123,7 +1123,7 @@ async function seed() {
       ],
     },
     { title: 'Ofertas', path: `/collections?category=${cSale.slug}`,  class: '0', status: 1, sort_order: 5 },
-    { title: 'Blog',    path: '/blogs',                                class: '0', status: 1, sort_order: 6 },
+    // Sin entrada "Blog": la tienda no tiene sección de blog (/blogs daba 404).
   ]);
   console.log('Menú creado');
 

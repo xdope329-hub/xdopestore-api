@@ -9,8 +9,12 @@ const Tag = require('../models/Tag');
 const ThemeOption = require('../models/ThemeOption');
 const Question = require('../models/Question');
 const auth = require('../middleware/auth');
+const optionalAuth = require('../middleware/optionalAuth');
 const adminOnly = require('../middleware/adminOnly');
 const { transformTag } = require('../utils/transform');
+const { orderMatchesContact } = require('../utils/orderTracking');
+// Vista del pedido compartida con GET /order/:id (misma forma para la tienda).
+const { transformOrder, populateDetail } = require('./order.routes');
 
 const transformQuestion = (q) => {
   if (!q) return q;
@@ -561,8 +565,8 @@ router.get('/license-key', async (req, res) => res.json({ data: { status: 'activ
 router.get('/app/settings', async (req, res) => res.json({ data: {} }));
 
 // GET /trackOrder
-// Solo el dueño del pedido (o un administrador) puede verlo: los números de
-// pedido son secuenciales y antes cualquier sesión veía cualquier pedido.
+// Dueño del pedido (o administrador) con sesión: acceso directo. Cualquier
+// otro visitante debe indicar el correo o teléfono de la compra (abajo).
 const isOrderOwnerOrAdmin = (req, order) =>
   isAdminUser(req.user) ||
   (order?.consumer_id && String(order.consumer_id?._id || order.consumer_id) === String(req.user?._id));
@@ -575,11 +579,29 @@ const customerOrderView = (req, order) => {
   return obj;
 };
 
-router.get('/trackOrder', auth, async (req, res) => {
-  const { order_number } = req.query;
-  const order = await Order.findOne({ order_number }).populate('status_id');
-  if (!order || !isOrderOwnerOrAdmin(req, order)) return res.status(404).json({ message: 'Order not found' });
-  res.json(customerOrderView(req, order));
+// Sin sesión aplica el limitador anti-spam de formularios públicos: el
+// seguimiento de invitados no debe servir para adivinar número + correo.
+const guestTrackingLimiter = (req, res, next) => (req.user ? next() : publicFormLimiter(req, res, next));
+
+// Seguimiento PÚBLICO: número de pedido + correo o teléfono con los que se
+// compró (también invitados). Antes exigía sesión (401) y el invitado nunca
+// podía seguir su pedido. "No existe" y "no coincide" responden igual (404):
+// los números de pedido son secuenciales y no se confirman.
+router.get('/trackOrder', optionalAuth, guestTrackingLimiter, async (req, res) => {
+  const orderNumber = parseInt(req.query.order_number, 10);
+  if (Number.isNaN(orderNumber)) return res.status(404).json({ message: 'Order not found' });
+  const order = await Order.findOne({ order_number: orderNumber }).populate(populateDetail);
+  if (!order) return res.status(404).json({ message: 'Order not found' });
+  if (!isOrderOwnerOrAdmin(req, order) && !orderMatchesContact(order, req.query.email_or_phone)) {
+    return res.status(404).json({ message: 'Order not found' });
+  }
+  const payload = transformOrder(order, { admin: isAdminUser(req.user) });
+  // Sin sesión no viajan los datos de la cuenta del comprador.
+  if (!req.user) {
+    delete payload.consumer;
+    delete payload.consumer_id;
+  }
+  res.json(payload);
 });
 
 // GET /order/invoice/:id
