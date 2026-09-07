@@ -600,14 +600,21 @@ function deriveParentPricingFromVariations(body) {
       discount: v.discount === '' || v.discount == null ? null : Number(v.discount),
       quantity: Number(v.quantity) || 0,
       stock_status: v.stock_status,
+      status: v.status,
     }))
     .filter((v) => Number.isFinite(v.price));
 
   if (priced.length === 0) return body;
 
-  // Cheapest by what the shopper actually pays.
+  // Cheapest by what the shopper actually pays, among the variants that can
+  // actually be bought (active and not sold out): the same rule the product
+  // page uses to pick its default variant, so the card's "from" price and
+  // discount match what the shopper sees on entering. Disabled or sold-out
+  // variants only count when nothing else is sellable.
   const effective = (v) => (Number.isFinite(v.sale_price) && v.sale_price > 0 ? v.sale_price : v.price);
-  const cheapest = priced.reduce((min, v) => (effective(v) < effective(min) ? v : min), priced[0]);
+  const sellable = priced.filter((v) => Number(v.status ?? 1) !== 0 && v.stock_status !== 'out_of_stock');
+  const pool = sellable.length ? sellable : priced;
+  const cheapest = pool.reduce((min, v) => (effective(v) < effective(min) ? v : min), pool[0]);
 
   if (body.price === undefined || body.price === '' || body.price === null) body.price = cheapest.price;
   if (body.sale_price === undefined || body.sale_price === '' || body.sale_price === null) {

@@ -52,6 +52,35 @@ describe("deriveParentPricingFromVariations", () => {
     expect(body.sale_price).toBe(50000);
   });
 
+  test("a sold-out or disabled variant never drives the parent price, even if cheaper", () => {
+    // "Caballero de la noche": the card advertised the 50% variant while the
+    // product page opened on a 5% one. Sold-out / hidden variants must not
+    // set the "from" price the cards show.
+    const body = deriveParentPricingFromVariations({
+      type: "classified",
+      variations: [
+        variant({ name: "Cafe/S", price: 159999, sale_price: 79999.5, discount: 50, quantity: 0, stock_status: "out_of_stock" }),
+        variant({ name: "Oculta", price: 159999, sale_price: 1000, discount: 99, status: 0 }),
+        variant({ name: "Beige/S", price: 159999, sale_price: 151999.05, discount: 5 }),
+        variant({ name: "Beige/M", price: 159999, sale_price: 143999.1, discount: 10 }),
+      ],
+    });
+    expect(body.sale_price).toBe(143999.1);
+    expect(body.discount).toBe(10);
+  });
+
+  test("when nothing is sellable the cheapest of all variants is used", () => {
+    const body = deriveParentPricingFromVariations({
+      type: "classified",
+      variations: [
+        variant({ name: "A", price: 100000, quantity: 0, stock_status: "out_of_stock" }),
+        variant({ name: "B", price: 80000, quantity: 0, stock_status: "out_of_stock" }),
+      ],
+    });
+    expect(body.price).toBe(80000);
+    expect(body.stock_status).toBe("out_of_stock");
+  });
+
   test("quantity is the sum of variant stock and stock_status reflects it", () => {
     const body = deriveParentPricingFromVariations({
       type: "classified",

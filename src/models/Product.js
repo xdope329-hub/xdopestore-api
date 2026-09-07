@@ -78,6 +78,10 @@ const productSchema = new mongoose.Schema({
   tax_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Tax', default: null },
   attributes_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Attribute' }],
   product_thumbnail_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment', default: null },
+  // Imagen para redes / SEO (pestaña SEO del admin). Sin este campo el esquema
+  // la descartaba al guardar y GET /product/slug/:slug fallaba al poblarla
+  // (StrictPopulateError → 500 en la metadata de cada ficha).
+  product_meta_image_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment', default: null },
   size_chart_image_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment', default: null },
   product_images: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' }],
   variations: [variationSchema],

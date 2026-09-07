@@ -50,6 +50,24 @@ function transformProduct(p) {
   };
 }
 
+// Comprador visible del pedido (`consumer`, ver transformOrder): la cuenta
+// poblada o, para pedidos de invitado, los datos guardados en el pedido
+// (guest_name / guest_email + teléfono de la dirección). Antes era null y el
+// admin veía el nombre y el correo en blanco en la lista, el detalle y el
+// recibo de cualquier pedido de invitado.
+function orderConsumer(obj) {
+  if (obj.consumer_id && typeof obj.consumer_id === 'object') return obj.consumer_id;
+  if (obj.is_guest || obj.guest_email || obj.guest_name) {
+    return {
+      name: obj.guest_name || '',
+      email: obj.guest_email || '',
+      phone: obj.shipping_address?.phone || obj.billing_address?.phone || '',
+      is_guest: true,
+    };
+  }
+  return obj.consumer_id || null;
+}
+
 // Campos de diagnóstico de la pasarela: solo el administrador los ve. El
 // cliente no los necesita y el payload crudo de Mercado Pago trae datos que
 // no son suyos para exponer.
@@ -59,7 +77,7 @@ function transformOrder(order, { admin = false } = {}) {
   const obj = order.toJSON ? order.toJSON() : { ...order };
   if (!admin) GATEWAY_INTERNAL_FIELDS.forEach((field) => { delete obj[field]; });
   obj.order_status = obj.status_id || null;
-  obj.consumer = obj.consumer_id || null;
+  obj.consumer = orderConsumer(obj);
   obj.created_at = obj.createdAt;
   if (!obj.order_status_activities) obj.order_status_activities = [];
   if (!obj.sub_orders) obj.sub_orders = [];

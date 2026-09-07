@@ -19,6 +19,11 @@ const COUPONS = () => ({
   AGOTADO: { code: 'AGOTADO', status: 1, type: 'percentage', amount: 10, is_unlimited: false, usage_per_coupon: 5, used: 5 },
   PORCLIENTE: { code: 'PORCLIENTE', status: 1, type: 'percentage', amount: 10, is_unlimited: false, usage_per_customer: 1 },
   PRIMERA: { code: 'PRIMERA', status: 1, type: 'percentage', amount: 15, is_first_order: true, is_unlimited: true },
+  // Restricciones por producto (pestaña Restricciones del admin).
+  SOLOHOODIE: { code: 'SOLOHOODIE', status: 1, type: 'percentage', amount: 50, is_unlimited: true, is_apply_all: false, products: ['p1'] },
+  SINJEAN: { code: 'SINJEAN', status: 1, type: 'percentage', amount: 10, is_unlimited: true, is_apply_all: true, exclude_products: ['p2'] },
+  SOLOJEAN: { code: 'SOLOJEAN', status: 1, type: 'fixed', amount: 5000, is_unlimited: true, is_apply_all: false, products: ['p2'] },
+  MIL: { code: 'MIL', status: 1, type: 'percentage', amount: 150, is_unlimited: true },
 });
 
 describe('coupons', () => {
@@ -98,6 +103,50 @@ describe('coupons', () => {
     const created = Order.create.mock.calls[0][0];
     expect(created).toMatchObject({ coupon_total_discount: 15000, coupon_code: 'HOODIE10', shipping_total: 9900, total: 144900 });
     expect(couponIncrement).toEqual({ code: 'HOODIE10', inc: 1 });
+  });
+
+  describe('restricción por productos', () => {
+    const jean = { sub_total: 50000, product_id: { _id: 'p2', name: 'Jean', price: 50000, variations: [] }, quantity: 1 };
+    beforeEach(() => { cartItems.push(jean); });
+    afterEach(() => { cartItems.length = 1; });
+
+    test('solo productos incluidos: el porcentaje se aplica a esos productos, no a todo el carrito', async () => {
+      const res = await request(app).post('/checkout').send({ coupon_code: 'SOLOHOODIE', city: 'Bogotá' });
+      expect(res.status).toBe(200);
+      // 50% del hoodie (150.000); el jean (50.000) no entra.
+      expect(res.body.coupon_total_discount).toBe(75000);
+      expect(res.body.sub_total).toBe(200000);
+    });
+
+    test('productos excluidos: se descuenta el resto del carrito', async () => {
+      const res = await request(app).post('/checkout').send({ coupon_code: 'SINJEAN', city: 'Bogotá' });
+      expect(res.status).toBe(200);
+      expect(res.body.coupon_total_discount).toBe(15000);
+    });
+
+    test('ningún producto elegible en el carrito → 422', async () => {
+      cartItems.length = 1; // solo el hoodie; SOLOJEAN exige el jean
+      const res = await request(app).post('/checkout').send({ coupon_code: 'SOLOJEAN', city: 'Bogotá' });
+      expect(res.status).toBe(422);
+      expect(res.body.message).toMatch(/no aplica a los productos/);
+    });
+  });
+
+  test('un porcentaje mayor a 100 nunca descuenta más que el subtotal', async () => {
+    const res = await request(app).post('/checkout').send({ coupon_code: 'MIL', city: 'Bogotá' });
+    expect(res.status).toBe(200);
+    expect(res.body.coupon_total_discount).toBe(150000);
+    expect(res.body.total).toBe(9900);
+  });
+
+  test('invitado: el límite por cliente y "primer pedido" se comprueban por su correo', async () => {
+    const { validateCoupon } = require('../src/utils/couponValidation');
+    Order.countDocuments.mockClear();
+    await expect(validateCoupon('PORCLIENTE', { userId: null, email: 'Ana@Example.com', subtotal: 150000, cartItems })).rejects.toThrow(/máximo de veces/);
+    expect(Order.countDocuments).toHaveBeenLastCalledWith({ guest_email: 'ana@example.com', coupon_code: 'PORCLIENTE' });
+    await expect(validateCoupon('PRIMERA', { userId: null, email: 'ana@example.com', subtotal: 150000, cartItems })).rejects.toThrow(/primer pedido/);
+    // Sin correo (vista previa del invitado antes de escribirlo) no se puede comprobar: se deja pasar y el pago lo valida con el correo.
+    await expect(validateCoupon('PRIMERA', { userId: null, subtotal: 150000, cartItems })).resolves.toMatchObject({ discount: 22500 });
   });
 
   test('pago con cupón inválido → 422 y no crea orden', async () => {
