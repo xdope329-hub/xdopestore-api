@@ -15,6 +15,13 @@ const couponSchema = new mongoose.Schema({
   is_first_order: { type: Boolean, default: false },
   is_expired: { type: Boolean, default: false },
   is_apply_all: { type: Boolean, default: true },
+  // Restricción por productos (pestaña Restricciones del admin): con
+  // `is_apply_all` el descuento cubre todo menos `exclude_products`; sin él,
+  // solo los `products` incluidos (utils/couponValidation.js). Antes el
+  // esquema no tenía estos campos: la selección se perdía al guardar y el
+  // cupón aplicaba a todo el carrito.
+  products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+  exclude_products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
   start_date: Date,
   end_date: Date,
   created_by_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const mongoose = require('mongoose');
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const auth = require('../middleware/auth');
@@ -38,6 +39,9 @@ router.get('/', auth, async (req, res) => {
 // POST /cart — add item or update quantity (with _method:put)
 router.post('/', auth, async (req, res) => {
   const { product_id, variation_id, quantity = 1, id } = req.body;
+  // Un id vacío o inválido (ficha de producto sin cargar) hacía fallar la
+  // consulta con un CastError (500); es una petición inválida.
+  if (!mongoose.Types.ObjectId.isValid(String(product_id || ''))) return res.status(422).json({ message: 'Producto inválido' });
   const product = await Product.findById(product_id);
   if (!product) return res.status(404).json({ message: 'Product not found' });
 

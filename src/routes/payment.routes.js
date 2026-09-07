@@ -139,7 +139,7 @@ async function buildOrderFromCart(userId, body) {
     const { validateCoupon } = require('../utils/couponValidation');
     // Si el cupón dejó de ser válido entre la vista previa y el pago, el
     // error 422 detiene la orden y el cliente ve el motivo.
-    const result = await validateCoupon(couponCode, { userId: userId || null, subtotal: amount });
+    const result = await validateCoupon(couponCode, { userId: userId || null, email: userId ? null : body.email, subtotal: amount, cartItems });
     coupon_total_discount = result.discount;
     couponFreeShipping = result.free_shipping;
     coupon_code = result.coupon.code;
@@ -233,8 +233,40 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
     await Cart.deleteMany({ consumer_id: req.user._id });
   }
 
+  // Confirmación por correo al comprador, con cuenta o invitado (services/
+  // mail). Antes solo el POST /order heredado la enviaba y el checkout de la
+  // tienda no avisaba nada. Nunca bloquea el pedido.
+  const mail = require('../services/mail');
+  mail
+    .sendOrderConfirmation({
+      order: order.toJSON ? order.toJSON() : order,
+      consumer: req.user ? { name: req.user.name, email: req.user.email } : null,
+    })
+    .catch(mail.logMailError('order-confirmation'));
+
   res.status(201).json({ order_id: String(order._id), ...gatewayResult });
 });
+
+// Pago confirmado por la pasarela (webhook o verificación) y pedido pasado a
+// "processing": aviso por correo al comprador, con cuenta o invitado. Nunca
+// interrumpe el flujo de pago.
+async function notifyPaymentConfirmed(orderId) {
+  const mail = require('../services/mail');
+  try {
+    const order = await Order.findById(orderId).populate([{ path: 'consumer_id', select: 'name email' }, { path: 'status_id' }]);
+    if (!order) return;
+    const account = order.consumer_id && typeof order.consumer_id === 'object' ? order.consumer_id : null;
+    await mail.sendOrderStatusUpdate({
+      order: order.toJSON ? order.toJSON() : order,
+      consumer: account ? { name: account.name, email: account.email } : null,
+      statusName: order.status_id?.name || 'Procesando',
+      statusSlug: order.status_id?.slug || 'processing',
+      paymentConfirmed: true,
+    });
+  } catch (err) {
+    mail.logMailError('payment-confirmed')(err);
+  }
+}
 
 // ── POST /payment/webhook ──────────────────────────────────────────────────────
 // Recibe notificaciones de la pasarela (sin autenticación JWT).
@@ -259,6 +291,7 @@ router.post('/webhook', async (req, res) => {
     if (applied.advanced && applied.order.consumer_id) {
       await Cart.deleteMany({ consumer_id: applied.order.consumer_id });
     }
+    if (applied.advanced) await notifyPaymentConfirmed(orderId);
   } catch (err) {
     console.error('[payment/webhook] error:', err.message);
   }
@@ -297,6 +330,8 @@ router.get('/verify/:orderId', optionalAuth, async (req, res) => {
       if (applied.advanced) {
         if (order.consumer_id) await Cart.deleteMany({ consumer_id: order.consumer_id });
         orderStatus = await OrderStatus.findById(applied.update.status_id);
+        // Sin esperar el correo: la tienda está aguardando esta respuesta.
+        notifyPaymentConfirmed(order._id);
       }
     }
   } catch (err) {

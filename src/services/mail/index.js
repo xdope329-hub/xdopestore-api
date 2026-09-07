@@ -25,6 +25,9 @@ function wrapHtml(bodyHtml) {
   </div></body></html>`;
 }
 
+const escapeHtml = (value) =>
+  String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
 // ────────────────────────────── Password reset ──────────────────────────────
 async function sendPasswordResetOTP({ email, name, otp }) {
   const subject = `${STORE_NAME()}: Your password reset code`;
@@ -50,7 +53,30 @@ async function sendTestEmail({ to }) {
   return brevo.sendTransactionalEmail({ to, subject, htmlContent: html, textContent: 'Brevo test email — connection OK.' });
 }
 
-// ────────────────────────────── Orders ──────────────────────────────
+// ────────────────────────────── Pedidos ──────────────────────────────
+// Los correos de pedido llegan al cliente con cuenta Y al invitado: el
+// invitado no tiene usuario, así que el destinatario sale de guest_name /
+// guest_email guardados en el pedido. Antes sin cuenta no se enviaba nada.
+function orderRecipient(order, consumer) {
+  const email = consumer?.email || order?.guest_email;
+  if (!email) return null;
+  return { email, name: consumer?.name || order?.guest_name || '' };
+}
+
+// "Ver pedido": con cuenta → detalle en Mi cuenta; invitado → seguimiento
+// público con el número y el correo ya puestos (no puede iniciar sesión).
+function orderLink(order, recipient) {
+  const number = order.order_number || order._id;
+  if (order.is_guest || !order.consumer_id) {
+    const qs = new URLSearchParams({ order_number: String(number), email_or_phone: recipient.email });
+    return `${STORE_URL()}/order/details?${qs}`;
+  }
+  return `${STORE_URL()}/account/order/details/${number}`;
+}
+
+const PAYMENT_LABELS = { cod: 'Pago contra entrega', mercadopago: 'Mercado Pago' };
+const paymentLabel = (method) => PAYMENT_LABELS[String(method || '').toLowerCase()] || String(method || '').toUpperCase();
+
 function formatMoney(n) {
   const num = Number(n || 0);
   return num.toLocaleString('es-CO', { maximumFractionDigits: 0 });
@@ -60,7 +86,7 @@ function orderItemsTable(order) {
   const rows = (order.products || [])
     .map(
       (p) => `<tr>
-        <td style="padding:8px 4px;border-bottom:1px solid #eee;">${p.name || ''}${p.variation_name ? ` (${p.variation_name})` : ''}</td>
+        <td style="padding:8px 4px;border-bottom:1px solid #eee;">${escapeHtml(p.name || '')}${p.variation_name ? ` (${escapeHtml(p.variation_name)})` : ''}</td>
         <td style="padding:8px 4px;border-bottom:1px solid #eee;text-align:center;">${p.quantity}</td>
         <td style="padding:8px 4px;border-bottom:1px solid #eee;text-align:right;">$${formatMoney(p.sub_total)}</td>
       </tr>`
@@ -68,54 +94,75 @@ function orderItemsTable(order) {
     .join('');
   return `<table style="width:100%;border-collapse:collapse;margin:16px 0;">
     <thead><tr>
-      <th style="text-align:left;padding:8px 4px;border-bottom:2px solid #212121;">Product</th>
-      <th style="text-align:center;padding:8px 4px;border-bottom:2px solid #212121;">Qty</th>
+      <th style="text-align:left;padding:8px 4px;border-bottom:2px solid #212121;">Producto</th>
+      <th style="text-align:center;padding:8px 4px;border-bottom:2px solid #212121;">Cant.</th>
       <th style="text-align:right;padding:8px 4px;border-bottom:2px solid #212121;">Subtotal</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
 
+const viewOrderButton = (href) =>
+  `<p><a href="${escapeHtml(href)}" style="display:inline-block;background:#212121;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;">Ver pedido</a></p>`;
+
+const guestTrackingHint = (order, recipient) =>
+  order.is_guest || !order.consumer_id
+    ? `<p style="color:#666;font-size:13px;">Puedes seguir tu pedido en cualquier momento con el número <strong>#${order.order_number || order._id}</strong> y el correo <strong>${escapeHtml(recipient.email)}</strong> en <a href="${escapeHtml(`${STORE_URL()}/order/tracking`)}" style="color:#666;">${escapeHtml(`${STORE_URL()}/order/tracking`)}</a>.</p>`
+    : '';
+
+// Confirmación al crear el pedido (POST /payment/initialize y POST /order).
 async function sendOrderConfirmation({ order, consumer }) {
-  if (!consumer?.email) return;
-  const subject = `${STORE_NAME()}: Order ${order.order_number || order._id} confirmed`;
+  const to = orderRecipient(order, consumer);
+  if (!to) return;
+  const number = order.order_number || order._id;
+  const subject = `${STORE_NAME()}: Pedido #${number} recibido`;
   const html = wrapHtml(`
-    <h2 style="margin-top:0;">Thanks for your order!</h2>
-    <p>Hi${consumer.name ? ` ${consumer.name}` : ''}, we received your order <strong>#${order.order_number || order._id}</strong>.</p>
+    <h2 style="margin-top:0;">¡Gracias por tu compra!</h2>
+    <p>Hola${to.name ? ` ${escapeHtml(to.name)}` : ''}, recibimos tu pedido <strong>#${number}</strong>.</p>
     ${orderItemsTable(order)}
     <p style="text-align:right;font-size:16px;"><strong>Total: $${formatMoney(order.total)}</strong></p>
-    <p><a href="${STORE_URL()}/account/order" style="display:inline-block;background:#212121;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;">View order</a></p>
+    <p>Método de pago: <strong>${escapeHtml(paymentLabel(order.payment_method))}</strong>.</p>
+    ${viewOrderButton(orderLink(order, to))}
+    ${guestTrackingHint(order, to)}
   `);
-  return brevo.sendTransactionalEmail({ to: { email: consumer.email, name: consumer.name }, subject, htmlContent: html });
+  return brevo.sendTransactionalEmail({ to, subject, htmlContent: html });
 }
 
 // Al ENTREGAR, el correo invita a calificar la compra. Solo para clientes
 // con cuenta: un pedido de invitado no puede reseñar (no hay usuario al que
 // atribuir la reseña).
 function rateYourPurchaseBlock(order) {
-  const items = (order.products || []).map((p) => `<li style="margin:4px 0;">${p.name || ''}</li>`).join('');
+  const items = (order.products || []).map((p) => `<li style="margin:4px 0;">${escapeHtml(p.name || '')}</li>`).join('');
   const link = `${STORE_URL()}/account/order/details/${order.order_number || order._id}`;
   return `
     <hr style="border:none;border-top:1px solid #eee;margin:24px 0;">
-    <h3 style="margin:0 0 8px;">How was your purchase?</h3>
-    <p style="margin:0 0 8px;">Your opinion helps other customers. Rate the products you received:</p>
+    <h3 style="margin:0 0 8px;">¿Qué tal tu compra?</h3>
+    <p style="margin:0 0 8px;">Tu opinión ayuda a otros clientes. Califica los productos que recibiste:</p>
     <ul style="margin:0 0 16px;padding-left:20px;color:#444;">${items}</ul>
-    <p><a href="${link}" style="display:inline-block;background:#0da487;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;">Rate your purchase</a></p>
-    <p style="color:#666;font-size:13px;">Reviews are published after a quick check by our team.</p>
+    <p><a href="${escapeHtml(link)}" style="display:inline-block;background:#0da487;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;">Califica tu compra</a></p>
+    <p style="color:#666;font-size:13px;">Las reseñas se publican tras una breve revisión de nuestro equipo.</p>
   `;
 }
 
-async function sendOrderStatusUpdate({ order, consumer, statusName, statusSlug }) {
-  if (!consumer?.email) return;
-  const subject = `${STORE_NAME()}: Order ${order.order_number || order._id} — ${statusName}`;
+// Cambio de estado del pedido: manual desde el admin o, con
+// `paymentConfirmed`, al confirmar la pasarela el pago (pending → processing).
+async function sendOrderStatusUpdate({ order, consumer, statusName, statusSlug, paymentConfirmed = false }) {
+  const to = orderRecipient(order, consumer);
+  if (!to) return;
+  const number = order.order_number || order._id;
+  const status = escapeHtml(statusName || 'actualizado');
+  const subject = paymentConfirmed
+    ? `${STORE_NAME()}: Pago confirmado — pedido #${number}`
+    : `${STORE_NAME()}: Pedido #${number} — ${statusName}`;
   const askForReview = statusSlug === 'delivered' && !order.is_guest;
   const html = wrapHtml(`
-    <h2 style="margin-top:0;">Order update</h2>
-    <p>Hi${consumer.name ? ` ${consumer.name}` : ''}, your order <strong>#${order.order_number || order._id}</strong> is now <strong>${statusName}</strong>.</p>
-    <p><a href="${STORE_URL()}/account/order" style="display:inline-block;background:#212121;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;">View order</a></p>
+    <h2 style="margin-top:0;">${paymentConfirmed ? '¡Recibimos tu pago!' : 'Actualización de tu pedido'}</h2>
+    <p>Hola${to.name ? ` ${escapeHtml(to.name)}` : ''}, tu pedido <strong>#${number}</strong> ahora está en estado: <strong>${status}</strong>.</p>
+    ${viewOrderButton(orderLink(order, to))}
+    ${guestTrackingHint(order, to)}
     ${askForReview ? rateYourPurchaseBlock(order) : ''}
   `);
-  return brevo.sendTransactionalEmail({ to: { email: consumer.email, name: consumer.name }, subject, htmlContent: html });
+  return brevo.sendTransactionalEmail({ to, subject, htmlContent: html });
 }
 
 // ────────────────────────────── Newsletter ──────────────────────────────

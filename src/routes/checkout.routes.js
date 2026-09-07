@@ -38,7 +38,7 @@ router.post('/', checkoutLimiter, optionalAuth, async (req, res) => {
   if (coupon_code) {
     const { validateCoupon } = require('../utils/couponValidation');
     try {
-      const result = await validateCoupon(coupon_code, { userId: req.user ? req.user._id : null, subtotal });
+      const result = await validateCoupon(coupon_code, { userId: req.user ? req.user._id : null, email: req.user ? null : req.body.email, subtotal, cartItems });
       discount = result.discount;
       couponFreeShipping = result.free_shipping;
       appliedCoupon = { code: result.coupon.code, type: result.coupon.type, amount: result.coupon.amount, title: result.coupon.title };
