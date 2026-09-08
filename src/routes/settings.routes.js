@@ -71,6 +71,16 @@ const DEFAULT_SETTING_VALUES = {
     twitter: '',
     pinterest: '',
   },
+  // Capacidad diaria de producción (utils/capacity.js). Con status 1, al
+  // llenarse el cupo de hoy (`daily_limit` unidades o pedidos según `mode`,
+  // en el día de la tienda) el checkout se cierra y la tienda solo ofrece
+  // WhatsApp con `whatsapp_message` para coordinar el pedido.
+  capacity: {
+    status: 0,
+    daily_limit: 4,
+    mode: 'units',
+    whatsapp_message: 'Hola XDOPE, quiero hacer un pedido pero hoy ya no tienen cupo. ¿Cuándo podrían atenderlo?',
+  },
 };
 
 // GET /settings  — public (UI middleware calls this unauthenticated)
@@ -109,6 +119,11 @@ router.get('/', optionalAuth, async (req, res) => {
     if (!merged.announcement_bar) {
       // Back-fill for databases created before the announcement bar existed.
       merged.announcement_bar = JSON.parse(JSON.stringify(DEFAULT_SETTING_VALUES.announcement_bar));
+      dirty = true;
+    }
+    if (!merged.capacity) {
+      // Back-fill para bases anteriores a la capacidad diaria.
+      merged.capacity = { ...DEFAULT_SETTING_VALUES.capacity };
       dirty = true;
     }
     if (!Array.isArray(merged.payment_methods) || merged.payment_methods.length === 0) {

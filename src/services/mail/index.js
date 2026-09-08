@@ -1,5 +1,11 @@
 // High-level mail dispatchers. Each helper is fire-and-forget safe: callers
 // use `.catch(logMailError)` so a Brevo outage never breaks the business flow.
+//
+// Cuándo escribe la tienda al cliente (routes/payment.routes.js y
+// routes/order.routes.js deciden; utils/orderStatusFlow.js → isPaymentConfirmed):
+//  - contra entrega: confirmación al crear el pedido y avisos de estado;
+//  - pasarela (Mercado Pago): NADA hasta que el pago queda confirmado; en
+//    ese momento la confirmación (`paymentConfirmed`) y luego los avisos.
 const brevo = require('./brevo');
 
 const STORE_NAME = () => process.env.BREVO_SENDER_NAME || 'xDope Store';
@@ -110,15 +116,26 @@ const guestTrackingHint = (order, recipient) =>
     ? `<p style="color:#666;font-size:13px;">Puedes seguir tu pedido en cualquier momento con el número <strong>#${order.order_number || order._id}</strong> y el correo <strong>${escapeHtml(recipient.email)}</strong> en <a href="${escapeHtml(`${STORE_URL()}/order/tracking`)}" style="color:#666;">${escapeHtml(`${STORE_URL()}/order/tracking`)}</a>.</p>`
     : '';
 
-// Confirmación al crear el pedido (POST /payment/initialize y POST /order).
-async function sendOrderConfirmation({ order, consumer }) {
+/**
+ * Confirmación del pedido con su detalle. Contra entrega: al crearlo
+ * (POST /payment/initialize y POST /order). Pasarela: cuando el pago queda
+ * confirmado (`paymentConfirmed`, desde webhook / verify) — antes de eso el
+ * cliente no recibe nada.
+ */
+async function sendOrderConfirmation({ order, consumer, paymentConfirmed = false }) {
   const to = orderRecipient(order, consumer);
   if (!to) return;
   const number = order.order_number || order._id;
-  const subject = `${STORE_NAME()}: Pedido #${number} recibido`;
+  const subject = paymentConfirmed
+    ? `${STORE_NAME()}: Pago confirmado — pedido #${number}`
+    : `${STORE_NAME()}: Pedido #${number} recibido`;
+  const greeting = `Hola${to.name ? ` ${escapeHtml(to.name)}` : ''}`;
+  const intro = paymentConfirmed
+    ? `${greeting}, tu pago fue confirmado y tu pedido <strong>#${number}</strong> ya está en preparación.`
+    : `${greeting}, recibimos tu pedido <strong>#${number}</strong>.`;
   const html = wrapHtml(`
-    <h2 style="margin-top:0;">¡Gracias por tu compra!</h2>
-    <p>Hola${to.name ? ` ${escapeHtml(to.name)}` : ''}, recibimos tu pedido <strong>#${number}</strong>.</p>
+    <h2 style="margin-top:0;">${paymentConfirmed ? '¡Recibimos tu pago!' : '¡Gracias por tu compra!'}</h2>
+    <p>${intro}</p>
     ${orderItemsTable(order)}
     <p style="text-align:right;font-size:16px;"><strong>Total: $${formatMoney(order.total)}</strong></p>
     <p>Método de pago: <strong>${escapeHtml(paymentLabel(order.payment_method))}</strong>.</p>
@@ -144,8 +161,9 @@ function rateYourPurchaseBlock(order) {
   `;
 }
 
-// Cambio de estado del pedido: manual desde el admin o, con
-// `paymentConfirmed`, al confirmar la pasarela el pago (pending → processing).
+// Cambio de estado del pedido (manual desde el admin). Solo se llama con el
+// pago confirmado (order.routes.js); `paymentConfirmed` cambia el encabezado
+// cuando el aviso acompaña a la confirmación del cobro.
 async function sendOrderStatusUpdate({ order, consumer, statusName, statusSlug, paymentConfirmed = false }) {
   const to = orderRecipient(order, consumer);
   if (!to) return;

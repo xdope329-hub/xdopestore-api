@@ -11,7 +11,7 @@ const auth = require('../middleware/auth');
 const adminOnly = require('../middleware/adminOnly');
 const { publicFormLimiter } = require('../middleware/rateLimiters');
 const { isAdminUser } = require('../utils/roles');
-const { parseRefundStatus, findOrderLine, validateRefundInput, refundEligibility } = require('../utils/refundRules');
+const { parseRefundStatus, findOrderLine, validateRefundInput, refundEligibility, refundableAmount } = require('../utils/refundRules');
 
 const isObjectId = (v) => typeof v === 'string' && mongoose.Types.ObjectId.isValid(v) && String(new mongoose.Types.ObjectId(v)) === v;
 
@@ -92,7 +92,7 @@ router.post('/', auth, publicFormLimiter, async (req, res) => {
     consumer_id: order.consumer_id?._id || order.consumer_id,
     reason: input.values.reason,
     payment_type: input.values.payment_type,
-    amount: Number(line.sub_total || 0),
+    amount: refundableAmount(order, line),
     quantity: Number(line.quantity || 1),
     status: 'pending',
   });

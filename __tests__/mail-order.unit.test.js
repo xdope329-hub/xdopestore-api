@@ -50,6 +50,16 @@ describe('confirmación del pedido', () => {
     await mail.sendOrderConfirmation({ order: { ...accountOrder, guest_email: null }, consumer: {} });
     expect(send).not.toHaveBeenCalled();
   });
+
+  test('pago confirmado por la pasarela: asunto y encabezado lo dicen, con el detalle del pedido', async () => {
+    const { mail, send } = load();
+    await mail.sendOrderConfirmation({ order: guestOrder, consumer: null, paymentConfirmed: true });
+    const { subject, htmlContent } = send.mock.calls[0][0];
+    expect(subject).toMatch(/Pago confirmado — pedido #2004/);
+    expect(htmlContent).toContain('¡Recibimos tu pago!');
+    expect(htmlContent).toContain('Gorra (Única)');
+    expect(htmlContent).not.toContain('¡Gracias por tu compra!');
+  });
 });
 
 describe('cambio de estado', () => {

@@ -38,4 +38,20 @@ function shapeCartVariation(product, variationId) {
   return { ...variation, variation_galleries: images, variation_image: images[0] || null };
 }
 
-module.exports = { findVariation, unitPrice, shapeCartVariation, CART_PRODUCT_POPULATE };
+/**
+ * Reglas de una línea de carrito: cantidad entera ≥ 1 y, si el producto
+ * tiene variantes, una variante existente. Devuelve { ok, variation, qty }
+ * o { ok: false, message }. Las usan POST /cart y la sincronización del
+ * carrito de invitado al iniciar sesión (cart.sync.routes.js).
+ */
+function validateCartLine(product, variationId, quantity) {
+  const qty = Number(quantity);
+  if (!Number.isInteger(qty) || qty < 1) return { ok: false, message: 'Cantidad inválida' };
+  const variation = findVariation(product, variationId);
+  if (Array.isArray(product?.variations) && product.variations.length && !variation) {
+    return { ok: false, message: 'Elige talla y color' };
+  }
+  return { ok: true, variation, qty };
+}
+
+module.exports = { findVariation, unitPrice, shapeCartVariation, validateCartLine, CART_PRODUCT_POPULATE };

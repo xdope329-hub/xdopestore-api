@@ -2,7 +2,7 @@ const router = require('express').Router();
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const auth = require('../middleware/auth');
-const { findVariation, unitPrice, shapeCartVariation, CART_PRODUCT_POPULATE } = require('../utils/cartPricing');
+const { findVariation, unitPrice, shapeCartVariation, validateCartLine, CART_PRODUCT_POPULATE } = require('../utils/cartPricing');
 
 // Same shape as GET /cart (see cart.routes.js): variant with its photo.
 async function getCartItems(userId) {
@@ -25,22 +25,31 @@ router.post('/sync/cart', auth, async (req, res) => {
     : Array.isArray(req.body?.items)
       ? req.body.items
       : [];
+  // Líneas que no cumplen las reglas del carrito (cantidad inválida, producto
+  // con variantes sin variante) no se copian: se devuelven en `skipped` para
+  // que la tienda avise. Antes entraban tal cual y el checkout las rechazaba.
+  const skipped = [];
   for (const item of payload) {
     const product = await Product.findById(item.product_id);
     if (!product) continue;
-    const price = unitPrice(product, findVariation(product, item.variation_id));
+    const check = validateCartLine(product, item.variation_id, item.quantity);
+    if (!check.ok) {
+      skipped.push({ product_id: String(item.product_id), name: product.name, message: check.message });
+      continue;
+    }
+    const price = unitPrice(product, check.variation);
     const existing = await Cart.findOne({ consumer_id: req.user._id, product_id: item.product_id, variation_id: item.variation_id || null });
     if (existing) {
-      existing.quantity = Math.max(existing.quantity, item.quantity);
+      existing.quantity = Math.max(existing.quantity, check.qty);
       existing.sub_total = existing.quantity * price;
       await existing.save();
     } else {
-      await Cart.create({ consumer_id: req.user._id, product_id: item.product_id, variation_id: item.variation_id || null, quantity: item.quantity, sub_total: item.quantity * price });
+      await Cart.create({ consumer_id: req.user._id, product_id: item.product_id, variation_id: item.variation_id || null, quantity: check.qty, sub_total: check.qty * price });
     }
   }
   const items = await getCartItems(req.user._id);
   const total = items.reduce((s, i) => s + (i.sub_total || 0), 0);
-  res.json({ items, total });
+  res.json({ items, total, skipped });
 });
 
 // POST /replace/cart  or  PUT /replace/cart — replace one variation with another
@@ -48,18 +57,20 @@ async function replaceCartHandler(req, res) {
   const { product_id, variation_id, quantity = 1, id } = req.body;
   const product = await Product.findById(product_id);
   if (!product) return res.status(404).json({ message: 'Product not found' });
-  const price = unitPrice(product, findVariation(product, variation_id));
+  const check = validateCartLine(product, variation_id, quantity);
+  if (!check.ok) return res.status(422).json({ message: check.message });
+  const price = unitPrice(product, check.variation);
 
   // Remove old item if `id` provided — only from the caller's own cart.
   if (id) await Cart.findOneAndDelete({ _id: id, consumer_id: req.user._id });
 
   const existing = await Cart.findOne({ consumer_id: req.user._id, product_id, variation_id: variation_id || null });
   if (existing) {
-    existing.quantity = Number(quantity);
+    existing.quantity = check.qty;
     existing.sub_total = existing.quantity * price;
     await existing.save();
   } else {
-    await Cart.create({ consumer_id: req.user._id, product_id, variation_id: variation_id || null, quantity: Number(quantity), sub_total: Number(quantity) * price });
+    await Cart.create({ consumer_id: req.user._id, product_id, variation_id: variation_id || null, quantity: check.qty, sub_total: check.qty * price });
   }
 
   const items = await getCartItems(req.user._id);

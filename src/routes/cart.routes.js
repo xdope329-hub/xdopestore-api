@@ -44,13 +44,22 @@ router.post('/', auth, async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(String(product_id || ''))) return res.status(422).json({ message: 'Producto inválido' });
   const product = await Product.findById(product_id);
   if (!product) return res.status(404).json({ message: 'Product not found' });
+  // Cantidades enteras y positivas: una cantidad negativa o fraccionaria
+  // bajaba el total y, al confirmarse el pedido, SUMABA stock.
+  const qty = Number(quantity);
+  if (!Number.isInteger(qty) || qty < 1) return res.status(422).json({ message: 'Cantidad inválida' });
 
   const chosenVariation = findVariation(product, variation_id);
+  // Un producto con variantes se compra por variante: sin ella se cobraba
+  // el precio "desde" del padre y se descontaba del contador del padre.
+  if (Array.isArray(product.variations) && product.variations.length && !chosenVariation) {
+    return res.status(422).json({ message: 'Elige talla y color' });
+  }
   const price = unitPrice(product, chosenVariation);
   let existing = await Cart.findOne({ consumer_id: req.user._id, product_id, variation_id: variation_id || null });
 
   if (existing) {
-    existing.quantity += Number(quantity);
+    existing.quantity += qty;
     existing.sub_total = existing.quantity * price;
     await existing.save();
   } else {
@@ -58,8 +67,8 @@ router.post('/', auth, async (req, res) => {
       consumer_id: req.user._id,
       product_id,
       variation_id: variation_id || null,
-      quantity: Number(quantity),
-      sub_total: Number(quantity) * price,
+      quantity: qty,
+      sub_total: qty * price,
     });
   }
 
@@ -69,11 +78,13 @@ router.post('/', auth, async (req, res) => {
 // PUT /cart — update by product_id in body (from UI handleIncDec without item ID in URL)
 router.put('/', auth, async (req, res) => {
   const { product_id, variation_id, quantity } = req.body;
+  const qty = Number(quantity);
+  if (!Number.isInteger(qty) || qty < 1) return res.status(422).json({ message: 'Cantidad inválida' });
   const product = await Product.findById(product_id);
   const price = unitPrice(product, findVariation(product, variation_id));
   const item = await Cart.findOne({ consumer_id: req.user._id, product_id, variation_id: variation_id || null });
   if (!item) return res.status(404).json({ message: 'Cart item not found' });
-  item.quantity = Number(quantity);
+  item.quantity = qty;
   item.sub_total = item.quantity * price;
   await item.save();
   res.json(await getCartResponse(req.user._id));
@@ -85,7 +96,9 @@ router.put('/:id', auth, async (req, res) => {
   if (!item) return res.status(404).json({ message: 'Cart item not found' });
   const product = await Product.findById(item.product_id);
   const price = unitPrice(product, findVariation(product, item.variation_id));
-  item.quantity = Number(req.body.quantity ?? item.quantity);
+  const qty = Number(req.body.quantity ?? item.quantity);
+  if (!Number.isInteger(qty) || qty < 1) return res.status(422).json({ message: 'Cantidad inválida' });
+  item.quantity = qty;
   item.sub_total = item.quantity * price;
   await item.save();
   res.json(await getCartResponse(req.user._id));

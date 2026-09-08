@@ -22,6 +22,7 @@ const fullValues = () => ({
   payment_methods_migrated_v2: true,
   whatsapp: { status: 0, number: "", message: "" },
   social: { facebook: "", instagram: "", twitter: "", pinterest: "" },
+  capacity: { status: 0, daily_limit: 4, mode: "units", whatsapp_message: "" },
 });
 
 function makeSettingDoc(values) {

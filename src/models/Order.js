@@ -76,13 +76,26 @@ const orderSchema = new mongoose.Schema({
   payment_error: { type: String, default: null },
   payment_initiated_at: { type: Date, default: null },
   payment_completed_at: { type: Date, default: null },
+  // Entrega elegida en el checkout ("Envío estándar | 3–5 días hábiles" y,
+  // para entrega el mismo día, la franja). El admin la muestra en el detalle;
+  // antes no se guardaba y salía siempre en blanco.
+  delivery_description: { type: String, default: null },
+  delivery_interval: { type: String, default: null },
+  // true cuando el stock de sus líneas ya se descontó (al confirmarse el
+  // pago; contra entrega al crearse). Al cancelar se repone y vuelve a false
+  // (utils/stock.js).
+  stock_reserved: { type: Boolean, default: false },
 }, { timestamps: true, toJSON: { virtuals: true } });
 
 // Auto-increment order_number
+// Número de pedido: contador atómico (models/Counter.js). "Leer el último y
+// sumar 1" daba el mismo número a dos checkouts simultáneos y el índice
+// único tumbaba el segundo con un 500.
 orderSchema.pre('save', async function (next) {
   if (!this.order_number) {
-    const last = await this.constructor.findOne({}, {}, { sort: { order_number: -1 } });
-    this.order_number = last ? last.order_number + 1 : 1000;
+    const Counter = require('./Counter');
+    const last = await this.constructor.findOne({}, { order_number: 1 }, { sort: { order_number: -1 } }).lean();
+    this.order_number = await Counter.next('order_number', { atLeast: last?.order_number || 999 });
   }
   next();
 });

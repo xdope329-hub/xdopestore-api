@@ -70,6 +70,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
 // Routes
 app.use('/', require('./src/routes/auth.routes'));
 app.use('/settings', require('./src/routes/settings.routes'));
+app.use('/capacity', require('./src/routes/capacity.routes'));
 app.use('/product', require('./src/routes/product.routes'));
 app.use('/category', require('./src/routes/category.routes'));
 app.use('/brand', require('./src/routes/brand.routes'));

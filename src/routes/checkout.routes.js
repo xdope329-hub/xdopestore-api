@@ -28,8 +28,15 @@ router.post('/', checkoutLimiter, optionalAuth, async (req, res) => {
     const { buildGuestCartItems } = require('../utils/guestCart');
     cartItems = await buildGuestCartItems(req.body.products);
   }
+  cartItems = cartItems.filter((i) => i.product_id && typeof i.product_id === 'object');
   if (!cartItems.length) return res.status(422).json({ message: 'Cart is empty' });
 
+  // Subtotales con los precios ACTUALES: exactamente los que cobrará el
+  // pedido (payment.routes.js), no el sub_total guardado al agregar.
+  const { findVariation, unitPrice } = require('../utils/cartPricing');
+  cartItems.forEach((i) => {
+    i.sub_total = Math.round(unitPrice(i.product_id, findVariation(i.product_id, i.variation_id)) * (Number(i.quantity) || 0));
+  });
   let subtotal = cartItems.reduce((sum, i) => sum + i.sub_total, 0);
   let discount = 0;
   let couponFreeShipping = false;
@@ -50,13 +57,16 @@ router.post('/', checkoutLimiter, optionalAuth, async (req, res) => {
   // Envío por zonas según la ciudad de entrega (0 mientras no haya ciudad,
   // y gratis al superar el umbral — ver src/utils/shippingQuote.js).
   const { quoteShipping } = require('../utils/shippingQuote');
-  let quote = city ? await quoteShipping(city, subtotal) : null;
+  // Con una dirección elegida se cotiza aunque no traiga ciudad (zona 2,
+  // igual que hará el pedido); sin dirección todavía, 0.
+  const hasAddress = Boolean(city || addressId || req.body.shipping_address || req.body.billing_address);
+  let quote = hasAddress ? await quoteShipping(city, subtotal) : null;
   // Cupón de envío gratis: anula el costo de envío de cualquier zona.
   if (quote && couponFreeShipping && quote.amount > 0) {
     quote = { ...quote, amount: 0, free_shipping: true };
   }
   const shipping_total = quote ? quote.amount : 0;
-  const total = subtotal - discount + shipping_total;
+  const total = Math.round(subtotal - discount + shipping_total);
 
   res.json({
     sub_total: subtotal,

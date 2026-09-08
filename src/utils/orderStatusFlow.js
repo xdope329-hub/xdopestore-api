@@ -93,6 +93,19 @@ function transitionError(from, to) {
   return `No se puede cambiar el pedido de "${from}" a "${to}". Los estados son secuenciales. ${options}`;
 }
 
+/**
+ * El pago está confirmado cuando el pedido es contra entrega (se paga al
+ * recibir: el pedido queda confirmado al crearse) o cuando la pasarela ya
+ * completó el cobro. Solo entonces se descuenta el stock y el cliente recibe
+ * correos: un pedido de Mercado Pago abandonado no reserva stock ni genera
+ * avisos.
+ */
+function isPaymentConfirmed(order) {
+  if (!order) return false;
+  if (String(order.payment_method || '').toLowerCase() === 'cod') return true;
+  return normalizePaymentStatus(order.payment_status) === PAYMENT_STATUS.COMPLETED;
+}
+
 module.exports = {
   ORDER_FLOW,
   CANCELLED,
@@ -102,6 +115,7 @@ module.exports = {
   mapGatewayPaymentStatus,
   nextPaymentStatus,
   isPaymentCompleted,
+  isPaymentConfirmed,
   isPaymentFailed,
   nextOrderStatus,
   allowedNextStatuses,
