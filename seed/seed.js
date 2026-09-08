@@ -862,7 +862,7 @@ async function seed() {
   await Coupon.insertMany([
     { title: 'Regalo de Bienvenida', code: 'BIENVENIDO15', description: '15% de descuento en tu primer pedido — sin monto mínimo.', type: 'percentage', amount: 15, min_spend: 0, is_unlimited: true, status: 1, created_by_id: adminUser._id },
     { title: 'Ofertas de Temporada', code: 'VERANO20',     description: '20% de descuento en artículos en oferta — tiempo limitado.',     type: 'percentage', amount: 20, min_spend: 50000, is_unlimited: true, status: 1, created_by_id: adminUser._id },
-    { title: 'Envío Gratis',         code: 'ENVIOGRATIS',  description: 'Envío estándar gratis en cualquier pedido.',                       type: 'fixed',      amount: 15000, min_spend: 0, is_unlimited: true, status: 1, created_by_id: adminUser._id },
+    { title: 'Envío Gratis',         code: 'ENVIOGRATIS',  description: 'Envío estándar gratis en cualquier pedido.',                       type: 'free_shipping', amount: 0, min_spend: 0, is_unlimited: true, status: 1, created_by_id: adminUser._id },
     { title: '$25.000 en Compras +$150.000', code: 'ESTILO25', description: '$25.000 de descuento en pedidos superiores a $150.000.',     type: 'fixed',      amount: 25000, min_spend: 150000, is_unlimited: true, status: 1, created_by_id: adminUser._id },
   ]);
 

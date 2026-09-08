@@ -10,6 +10,10 @@ const auth = require('../middleware/auth');
 const optionalAuth = require('../middleware/optionalAuth');
 const { getGateway } = require('../services/payment/PaymentFactory');
 const { findCountry, findState } = require('../data/countries');
+const { isPaymentConfirmed } = require('../utils/orderStatusFlow');
+const { stockProblems, stockMessage, reserveStock } = require('../utils/stock');
+const { capacityProblem } = require('../utils/capacity');
+const { unitPrice } = require('../utils/cartPricing');
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -95,6 +99,15 @@ function findCartVariation(product, variationId) {
   return product.variations.find((v) => String(v._id || v.id) === wanted) || null;
 }
 
+// Uso de cupón (límite total de usos). Se cuenta solo con el pago
+// confirmado: contra entrega al crear el pedido, pasarela en
+// onPaymentConfirmed. Un checkout de Mercado Pago abandonado no consume usos.
+async function countCouponUse(code) {
+  if (!code) return;
+  const Coupon = require('../models/Coupon');
+  await Coupon.updateOne({ code }, { $inc: { used: 1 } });
+}
+
 async function buildOrderFromCart(userId, body) {
   const { billing_address, billing_address_id, shipping_address, shipping_address_id, payment_method, notes } = body;
   const couponCode = body.coupon_code || body.coupon || '';
@@ -111,6 +124,9 @@ async function buildOrderFromCart(userId, body) {
     const { buildGuestCartItems } = require('../utils/guestCart');
     cartItems = await buildGuestCartItems(body.products);
   }
+  // Líneas cuyo producto ya no existe no se cobran (antes tumbaban el
+  // checkout con un 500 al leer product_id.name).
+  cartItems = cartItems.filter((i) => i.product_id && typeof i.product_id === 'object');
   if (!cartItems.length) return null;
 
   const products = cartItems.map(i => {
@@ -122,13 +138,15 @@ async function buildOrderFromCart(userId, body) {
       ...buildOrderLineSnapshot(i.product_id, variation),
       name: i.product_id.name,
       quantity: i.quantity,
-      // For variable products the unit price is the variant's, not the parent's.
-      price: variation ? (variation.sale_price ?? variation.price) : (i.product_id.sale_price || i.product_id.price),
-      sub_total: i.sub_total,
+      // Precio ACTUAL de la variante o del producto (utils/cartPricing.js) y
+      // subtotal recalculado con él: el sub_total guardado en el carrito era
+      // el de cuando se agregó y quedaba viejo si el admin cambiaba el precio.
+      price: unitPrice(i.product_id, variation),
+      sub_total: Math.round(unitPrice(i.product_id, variation) * i.quantity),
     };
   });
 
-  const amount = cartItems.reduce((s, i) => s + i.sub_total, 0);
+  const amount = products.reduce((s, p) => s + p.sub_total, 0);
 
   // Cupón: se revalida y calcula SIEMPRE en el servidor (mismas reglas que la
   // vista previa) — nunca se confía en un descuento enviado por el cliente.
@@ -153,10 +171,18 @@ async function buildOrderFromCart(userId, body) {
   const quote = await quoteShipping(shipCity, amount);
   const shipping_total = couponFreeShipping ? 0 : quote.amount;
 
-  const total = amount - coupon_total_discount + shipping_total;
+  // COP no tiene decimales: el total se redondea (un descuento porcentual
+  // podía dejar centavos que Mercado Pago cobra distinto).
+  const total = Math.round(amount - coupon_total_discount + shipping_total);
   const pendingStatus = await OrderStatus.findOne({ slug: 'pending' });
 
-  return { products, amount, total, pendingStatus, billing_address: resolvedBilling, shipping_address: resolvedShipping, payment_method, coupon_total_discount, coupon_code, shipping_total, notes };
+  return {
+    products, amount, total, pendingStatus, billing_address: resolvedBilling, shipping_address: resolvedShipping,
+    payment_method, coupon_total_discount, coupon_code, shipping_total, notes,
+    delivery_description: body.delivery_description || null,
+    delivery_interval: body.delivery_interval || null,
+    cartItems,
+  };
 }
 
 // ── POST /payment/initialize ───────────────────────────────────────────────────
@@ -181,8 +207,20 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
   }
   if (!built) return res.status(422).json({ message: 'El carrito está vacío' });
 
+  // Stock: se comprueba con las cantidades reales antes de crear el pedido
+  // (la tienda limita el selector, pero el servidor es quien manda).
+  const problems = stockProblems(built.cartItems);
+  if (problems.length) return res.status(422).json({ message: stockMessage(problems), stock: problems });
+
+  // Capacidad diaria (utils/capacity.js): con el cupo de hoy lleno el pedido
+  // solo se coordina por WhatsApp. La tienda ya oculta el checkout, pero el
+  // servidor es quien manda.
+  const capacity = await capacityProblem(built.cartItems);
+  if (capacity) return res.status(422).json({ message: capacity.message, capacity: capacity.capacity });
+
   const { products, amount, total, pendingStatus, shipping_address,
-          payment_method, coupon_total_discount, coupon_code, shipping_total, notes } = built;
+          payment_method, coupon_total_discount, coupon_code, shipping_total, notes,
+          delivery_description, delivery_interval } = built;
 
   // Sin dirección de envío no hay pedido: antes un id inexistente (o un
   // invitado sin direcciones) creaba la orden con direcciones vacías y sin
@@ -208,14 +246,14 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
     total,
     status_id: pendingStatus?._id,
     notes,
+    delivery_description,
+    delivery_interval,
     payment_initiated_at: new Date(),
   });
 
-  // Contabiliza el uso del cupón (para el límite total de usos).
-  if (coupon_code) {
-    const Coupon = require('../models/Coupon');
-    await Coupon.updateOne({ code: coupon_code }, { $inc: { used: 1 } });
-  }
+  // Uso del cupón solo con el pago confirmado (contra entrega); con pasarela
+  // se cuenta en onPaymentConfirmed.
+  if (coupon_code && isPaymentConfirmed(order)) await countCouponUse(coupon_code);
 
   let gatewayResult;
   try {
@@ -233,34 +271,39 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
     await Cart.deleteMany({ consumer_id: req.user._id });
   }
 
-  // Confirmación por correo al comprador, con cuenta o invitado (services/
-  // mail). Antes solo el POST /order heredado la enviaba y el checkout de la
-  // tienda no avisaba nada. Nunca bloquea el pedido.
-  const mail = require('../services/mail');
-  mail
-    .sendOrderConfirmation({
-      order: order.toJSON ? order.toJSON() : order,
-      consumer: req.user ? { name: req.user.name, email: req.user.email } : null,
-    })
-    .catch(mail.logMailError('order-confirmation'));
+  // Contra entrega: el pedido queda confirmado al crearse → se descuenta el
+  // stock y se envía la confirmación al comprador (cuenta o invitado). Con
+  // pasarela (Mercado Pago) nada de esto ocurre hasta que el pago se confirma
+  // (webhook / verify): un checkout abandonado no reserva stock ni manda
+  // correos. Nunca bloquea el pedido.
+  if (isPaymentConfirmed(order)) {
+    reserveStock(order._id).catch((err) => console.error('[stock] reserve failed', err?.message || err));
+    const mail = require('../services/mail');
+    mail
+      .sendOrderConfirmation({
+        order: order.toJSON ? order.toJSON() : order,
+        consumer: req.user ? { name: req.user.name, email: req.user.email } : null,
+      })
+      .catch(mail.logMailError('order-confirmation'));
+  }
 
   res.status(201).json({ order_id: String(order._id), ...gatewayResult });
 });
 
 // Pago confirmado por la pasarela (webhook o verificación) y pedido pasado a
-// "processing": aviso por correo al comprador, con cuenta o invitado. Nunca
-// interrumpe el flujo de pago.
-async function notifyPaymentConfirmed(orderId) {
+// "processing": ahora sí se descuenta el stock y el comprador (cuenta o
+// invitado) recibe la confirmación del pedido. Nunca interrumpe el flujo.
+async function onPaymentConfirmed(orderId) {
   const mail = require('../services/mail');
+  reserveStock(orderId).catch((err) => console.error('[stock] reserve failed', err?.message || err));
   try {
     const order = await Order.findById(orderId).populate([{ path: 'consumer_id', select: 'name email' }, { path: 'status_id' }]);
     if (!order) return;
+    try { await countCouponUse(order.coupon_code); } catch (err) { console.error('[coupon] usage count failed', err?.message || err); }
     const account = order.consumer_id && typeof order.consumer_id === 'object' ? order.consumer_id : null;
-    await mail.sendOrderStatusUpdate({
+    await mail.sendOrderConfirmation({
       order: order.toJSON ? order.toJSON() : order,
       consumer: account ? { name: account.name, email: account.email } : null,
-      statusName: order.status_id?.name || 'Procesando',
-      statusSlug: order.status_id?.slug || 'processing',
       paymentConfirmed: true,
     });
   } catch (err) {
@@ -291,7 +334,7 @@ router.post('/webhook', async (req, res) => {
     if (applied.advanced && applied.order.consumer_id) {
       await Cart.deleteMany({ consumer_id: applied.order.consumer_id });
     }
-    if (applied.advanced) await notifyPaymentConfirmed(orderId);
+    if (applied.advanced) await onPaymentConfirmed(orderId);
   } catch (err) {
     console.error('[payment/webhook] error:', err.message);
   }
@@ -331,7 +374,7 @@ router.get('/verify/:orderId', optionalAuth, async (req, res) => {
         if (order.consumer_id) await Cart.deleteMany({ consumer_id: order.consumer_id });
         orderStatus = await OrderStatus.findById(applied.update.status_id);
         // Sin esperar el correo: la tienda está aguardando esta respuesta.
-        notifyPaymentConfirmed(order._id);
+        onPaymentConfirmed(order._id);
       }
     }
   } catch (err) {
@@ -340,5 +383,9 @@ router.get('/verify/:orderId', optionalAuth, async (req, res) => {
 
   res.json({ order_id: String(order._id), order_number: order.order_number, payment_status: gatewayStatus, order_status: orderStatus });
 });
+
+// Compartido con el POST /order heredado (order.routes.js): un solo
+// constructor de pedidos con precios, cupón y envío calculados en el servidor.
+router.buildOrderFromCart = buildOrderFromCart;
 
 module.exports = router;

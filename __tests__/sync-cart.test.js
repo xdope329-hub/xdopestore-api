@@ -104,6 +104,37 @@ describe('POST /sync/cart', () => {
     expect(Cart.create).not.toHaveBeenCalled();
   });
 
+  test('skips a variable product without a variant and a line with an invalid quantity, and reports them', async () => {
+    Product.findById.mockImplementation(async (id) => (id === 'p-variable'
+      ? { _id: id, name: 'Camisa', price: 200, sale_price: 150, variations: [{ _id: 'variation-red', price: 120, sale_price: 80 }] }
+      : { _id: id, name: 'Gorra', price: 100, sale_price: 100 }));
+    Cart.findOne.mockResolvedValue(null);
+
+    const res = await request(app).post('/sync/cart').send({
+      cart: [
+        { product_id: 'p-variable', variation_id: '', quantity: 1 },
+        { product_id: 'p-simple', quantity: 0 },
+        { product_id: 'p-simple', quantity: 2 },
+      ],
+    });
+
+    expect(res.status).toBe(200);
+    expect(Cart.create).toHaveBeenCalledTimes(1);
+    expect(Cart.create).toHaveBeenCalledWith(expect.objectContaining({ product_id: 'p-simple', quantity: 2 }));
+    expect(res.body.skipped).toEqual([
+      { product_id: 'p-variable', name: 'Camisa', message: 'Elige talla y color' },
+      { product_id: 'p-simple', name: 'Gorra', message: 'Cantidad inválida' },
+    ]);
+  });
+
+  test('replace/cart refuses a variable product without a variant', async () => {
+    Product.findById.mockResolvedValue({ _id: 'p-variable', price: 200, sale_price: 150, variations: [{ _id: 'variation-red', price: 120, sale_price: 80 }] });
+    const res = await request(app).put('/replace/cart').send({ product_id: 'p-variable', variation_id: '', quantity: 1 });
+    expect(res.status).toBe(422);
+    expect(res.body.message).toBe('Elige talla y color');
+    expect(Cart.create).not.toHaveBeenCalled();
+  });
+
   test('uses the selected variation price when synchronizing a guest cart', async () => {
     Product.findById.mockResolvedValue({
       _id: 'p-variable',

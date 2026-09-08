@@ -43,6 +43,7 @@ function buildApp(currentSlug) {
     }),
     findOne: jest.fn(() => chain(orderDoc())),
     findByIdAndUpdate: jest.fn(async (_id, update) => { state.updates.push(update); if (update.status_id) state.status_id = update.status_id; return orderDoc(); }),
+    updateOne: jest.fn(async (_filter, update) => { state.updates.push(update); return { matchedCount: 1, modifiedCount: 1 }; }),
   };
   const OrderStatus = {
     findById: jest.fn(async (sid) => byId(sid)),

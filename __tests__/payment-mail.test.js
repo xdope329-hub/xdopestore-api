@@ -3,8 +3,9 @@
  *  - POST /payment/initialize confirma el pedido por correo (cuenta o
  *    invitado); antes solo el POST /order heredado lo hacía y el checkout de
  *    la tienda no enviaba nada;
- *  - webhook / verify: al confirmarse el pago (pending → processing) se avisa
- *    al comprador.
+ *  - webhook / verify: al confirmarse el pago (pending → processing) el
+ *    comprador recibe la confirmación del pedido (`paymentConfirmed`); un
+ *    pedido de pasarela no genera correo al crearse.
  * Sin base de datos ni red: modelos y correo simulados.
  */
 
@@ -33,7 +34,8 @@ function setup({ role = null, orderSlug = 'pending', guest = true } = {}) {
   });
   const Order = {
     create: jest.fn(async () => created),
-    findByIdAndUpdate: jest.fn(async (_id, update) => { if (update.status_id) state.status_id = update.status_id; if (update.payment_status) state.payment_status = update.payment_status; return {}; }),
+    findOneAndUpdate: jest.fn(async (_guard, update) => { if (update.status_id) state.status_id = update.status_id; if (update.payment_status) state.payment_status = update.payment_status; return {}; }),
+    updateOne: jest.fn(async () => ({})),
     findById: jest.fn(() => {
       const doc = stored();
       const populated = { ...doc, status_id: [PENDING, PROCESSING].find((s) => String(s._id) === String(doc.status_id)), consumer_id: guest ? null : consumerDoc };
@@ -86,14 +88,15 @@ describe('POST /payment/initialize', () => {
 });
 
 describe('pago confirmado por la pasarela', () => {
-  test('webhook aprobado con pedido pending → aviso "Procesando" al comprador', async () => {
+  test('webhook aprobado con pedido pending → confirmación "pago confirmado" al comprador', async () => {
     const { app, mail } = setup({ role: 'consumer', guest: false });
     expect((await request(app).post('/payment/webhook').send({ type: 'payment', data: { id: 'tx1' } })).status).toBe(200);
     await flush();
-    expect(mail.sendOrderStatusUpdate).toHaveBeenCalledTimes(1);
-    const args = mail.sendOrderStatusUpdate.mock.calls[0][0];
+    expect(mail.sendOrderConfirmation).toHaveBeenCalledTimes(1);
+    const args = mail.sendOrderConfirmation.mock.calls[0][0];
     expect(args.consumer).toEqual({ name: 'Ana', email: 'ana@example.com' });
-    expect(args).toMatchObject({ statusName: 'Procesando', statusSlug: 'processing', paymentConfirmed: true });
+    expect(args).toMatchObject({ paymentConfirmed: true });
+    expect(mail.sendOrderStatusUpdate).not.toHaveBeenCalled();
   });
 
   test('verificación desde la tienda: mismo aviso, también para invitados', async () => {
@@ -102,15 +105,16 @@ describe('pago confirmado por la pasarela', () => {
     expect(res.status).toBe(200);
     expect(res.body.payment_status).toBe('completed');
     await flush();
-    expect(mail.sendOrderStatusUpdate).toHaveBeenCalledTimes(1);
-    expect(mail.sendOrderStatusUpdate.mock.calls[0][0]).toMatchObject({ consumer: null, paymentConfirmed: true });
-    expect(mail.sendOrderStatusUpdate.mock.calls[0][0].order).toMatchObject({ guest_email: 'invitado@example.com' });
+    expect(mail.sendOrderConfirmation).toHaveBeenCalledTimes(1);
+    expect(mail.sendOrderConfirmation.mock.calls[0][0]).toMatchObject({ consumer: null, paymentConfirmed: true });
+    expect(mail.sendOrderConfirmation.mock.calls[0][0].order).toMatchObject({ guest_email: 'invitado@example.com' });
   });
 
   test('pedido que ya estaba en processing: el pago repetido no reenvía el aviso', async () => {
     const { app, mail } = setup({ role: 'consumer', guest: false, orderSlug: 'processing' });
     await request(app).post('/payment/webhook').send({ type: 'payment', data: { id: 'tx1' } });
     await flush();
+    expect(mail.sendOrderConfirmation).not.toHaveBeenCalled();
     expect(mail.sendOrderStatusUpdate).not.toHaveBeenCalled();
   });
 });

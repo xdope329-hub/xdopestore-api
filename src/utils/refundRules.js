@@ -57,4 +57,18 @@ function refundEligibility({ order, line, product } = {}) {
   return { ok: true };
 }
 
-module.exports = { REFUND_STATUSES, MAX_REASON_LENGTH, parseRefundStatus, findOrderLine, validateRefundInput, refundEligibility };
+/**
+ * Importe reembolsable de una línea: su subtotal menos la parte proporcional
+ * del descuento por cupón del pedido. Antes se devolvía el subtotal completo
+ * aunque el cliente hubiera pagado menos gracias al cupón.
+ */
+function refundableAmount(order, line) {
+  const sub = Number(line?.sub_total || 0);
+  const amount = Number(order?.amount || 0);
+  const discount = Number(order?.coupon_total_discount || 0);
+  if (sub <= 0) return 0;
+  if (amount <= 0 || discount <= 0) return Math.round(sub);
+  return Math.max(0, Math.round(sub - (sub * Math.min(discount, amount)) / amount));
+}
+
+module.exports = { REFUND_STATUSES, MAX_REASON_LENGTH, parseRefundStatus, findOrderLine, validateRefundInput, refundEligibility, refundableAmount };

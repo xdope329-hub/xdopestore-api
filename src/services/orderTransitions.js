@@ -14,6 +14,9 @@ const {
   shouldAdvanceOnPayment,
   transitionError,
   isPaymentFailed,
+  normalizePaymentStatus,
+  PAYMENT_STATUS,
+  CANCELLED,
 } = require('../utils/orderStatusFlow');
 
 const slugOf = (statusDoc) => statusDoc?.slug || 'pending';
@@ -41,6 +44,19 @@ async function transitionOrder(orderDoc, targetStatusId) {
     return { ok: false, status: 422, message: transitionError(from, target.slug), allowed: allowedNextStatuses(from) };
   }
   const order = await Order.findByIdAndUpdate(orderDoc._id, { status_id: target._id }, { new: true });
+  // Efectos del cambio de estado, en un solo sitio para TODAS las rutas
+  // (PUT /order/:id y PUT /orderStatus/:id):
+  //  - cancelar repone el stock que se hubiera descontado (utils/stock.js);
+  //  - entregar un pedido contra entrega deja el pago como completado (se
+  //    cobró al entregar): así suma en ingresos y admite reembolsos.
+  if (target.slug === CANCELLED) {
+    const { releaseStock } = require('../utils/stock');
+    releaseStock(orderDoc._id).catch((err) => console.error('[stock] release failed', err?.message || err));
+  }
+  if (target.slug === 'delivered' && String(orderDoc.payment_method || '').toLowerCase() === 'cod' && normalizePaymentStatus(orderDoc.payment_status) !== PAYMENT_STATUS.COMPLETED) {
+    await Order.updateOne({ _id: orderDoc._id }, { $set: { payment_status: PAYMENT_STATUS.COMPLETED, payment_completed_at: new Date() } });
+    if (order) order.payment_status = PAYMENT_STATUS.COMPLETED;
+  }
   return { ok: true, order, from, to: target.slug };
 }
 
@@ -71,7 +87,17 @@ async function applyPaymentResult(orderId, { transactionId, status, gatewayRespo
     if (processing) update.status_id = processing._id;
   }
 
-  await Order.findByIdAndUpdate(orderId, update);
+  // Escritura condicional: si otra notificación (webhook y verify a la vez,
+  // o el mismo webhook repetido) ya cambió el pago o el estado, esta no
+  // aplica nada y no repite efectos (stock, correo). Los pedidos antiguos
+  // pueden no tener payment_status: null casa con el campo ausente.
+  const guard = { _id: orderId, payment_status: order.payment_status ?? null };
+  if (advanced) guard.status_id = order.status_id?._id || order.status_id || null;
+  const written = await Order.findOneAndUpdate(guard, update, { new: false });
+  if (!written) return { order, paymentStatus: order.payment_status, advanced: false, update: {}, raced: true };
+  if (paymentStatus === PAYMENT_STATUS.COMPLETED && slugOf(order.status_id) === CANCELLED) {
+    console.warn(`[payment] pago aprobado para el pedido CANCELADO #${order.order_number || orderId}: revisar y reembolsar`);
+  }
   return { order, paymentStatus, advanced, update };
 }
 

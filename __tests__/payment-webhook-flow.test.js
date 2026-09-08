@@ -29,7 +29,7 @@ function buildApp({ orderSlug, paymentStatus = 'pending', gatewayStatus }) {
       const populated = { ...doc, status_id: Object.values(STATUSES).find((s) => String(s._id) === String(state.status_id)) };
       return { populate: async () => populated, then: (r) => Promise.resolve(doc).then(r) };
     }),
-    findByIdAndUpdate: jest.fn(async (_id, update) => {
+    findOneAndUpdate: jest.fn(async (_guard, update) => {
       state.updates.push(update);
       if (update.status_id) state.status_id = update.status_id;
       if (update.payment_status) state.payment_status = update.payment_status;

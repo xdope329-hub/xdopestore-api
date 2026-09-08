@@ -1,4 +1,5 @@
 const Product = require('../models/Product');
+const { findVariation, unitPrice } = require('./cartPricing');
 
 /**
  * Reconstruye el carrito de un invitado EN EL SERVIDOR a partir de
@@ -15,7 +16,7 @@ async function buildGuestCartItems(rawProducts) {
     .map((p) => ({
       product_id: String(p.product_id || p.product?.id || p.product?._id || ''),
       variation_id: p.variation_id ? String(p.variation_id) : null,
-      quantity: Math.max(1, Number(p.quantity) || 1),
+      quantity: Math.max(1, Math.floor(Number(p.quantity) || 1)),
     }))
     .filter((p) => p.product_id);
   if (!wanted.length) return [];
@@ -27,15 +28,12 @@ async function buildGuestCartItems(rawProducts) {
   for (const w of wanted) {
     const doc = byId.get(w.product_id);
     if (!doc) continue; // producto eliminado/inactivo — se omite
-    let unit;
-    if (w.variation_id && Array.isArray(doc.variations)) {
-      const variation = doc.variations.find((v) => String(v._id || v.id) === w.variation_id);
-      if (!variation) continue;
-      unit = Number(variation.sale_price ?? variation.price ?? 0);
-    } else {
-      unit = Number(doc.sale_price || doc.price || 0);
-    }
-    items.push({ product_id: doc, variation_id: w.variation_id, quantity: w.quantity, sub_total: unit * w.quantity });
+    const variation = w.variation_id ? findVariation(doc, w.variation_id) : null;
+    if (w.variation_id && !variation) continue;
+    // Mismo precio que el carrito de usuarios (utils/cartPricing.js): un
+    // sale_price 0 o null cobra el precio normal, nunca $0.
+    const unit = unitPrice(doc, variation);
+    items.push({ product_id: doc, variation_id: w.variation_id, quantity: w.quantity, sub_total: Math.round(unit * w.quantity) });
   }
   return items;
 }

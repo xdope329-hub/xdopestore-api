@@ -113,7 +113,7 @@ describe('POST /payment/initialize — variation snapshot', () => {
     expect(line.price).toBe(100);
   });
 
-  test('is resilient when variation_id no longer matches any variant', async () => {
+  test('rejects a line whose variation_id no longer matches any variant (pick talla/color again)', async () => {
     Cart.find.mockReturnValue({
       populate: () => Promise.resolve([
         { product_id: variableProduct, variation_id: '64b00000000000000000dead', quantity: 1, sub_total: 160000 },
@@ -122,9 +122,10 @@ describe('POST /payment/initialize — variation snapshot', () => {
 
     const res = await placeOrder();
 
-    expect(res.status).toBe(201);
-    const line = Order.create.mock.calls[0][0].products[0];
-    expect(line.variation_name).toBeNull();
-    expect(line.price).toBe(160000); // falls back to the parent price
+    // Antes se cobraba el precio "desde" del padre y el stock se descontaba
+    // del contador del padre; ahora la variante es obligatoria (utils/stock.js).
+    expect(res.status).toBe(422);
+    expect(res.body.message).toMatch(/elige talla y color/);
+    expect(Order.create).not.toHaveBeenCalled();
   });
 });

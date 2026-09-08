@@ -40,8 +40,8 @@ describe('POST /checkout', () => {
   test('returns totals (subtotal + zero discount + total) when cart has items and no coupon', async () => {
     Cart.find.mockReturnValue({
       populate: () => Promise.resolve([
-        { sub_total: 100 },
-        { sub_total: 50 },
+        { product_id: { _id: 'p1', price: 100 }, quantity: 1, sub_total: 100 },
+        { product_id: { _id: 'p2', price: 50 }, quantity: 1, sub_total: 50 },
       ]),
     });
 
@@ -57,7 +57,7 @@ describe('POST /checkout', () => {
   });
 
   test('applies a fixed-amount coupon discount to the total', async () => {
-    Cart.find.mockReturnValue({ populate: () => Promise.resolve([{ sub_total: 200 }]) });
+    Cart.find.mockReturnValue({ populate: () => Promise.resolve([{ product_id: { _id: 'p1', price: 200 }, quantity: 1, sub_total: 200 }]) });
     Coupon.findOne.mockResolvedValue({
       code: 'BIENVENIDO15',
       type: 'fixed',
@@ -77,7 +77,7 @@ describe('POST /checkout', () => {
   });
 
   test('applies a percentage coupon discount', async () => {
-    Cart.find.mockReturnValue({ populate: () => Promise.resolve([{ sub_total: 100 }]) });
+    Cart.find.mockReturnValue({ populate: () => Promise.resolve([{ product_id: { _id: 'p1', price: 100 }, quantity: 1, sub_total: 100 }]) });
     Coupon.findOne.mockResolvedValue({
       code: 'VERANO20',
       type: 'percentage',
@@ -94,7 +94,7 @@ describe('POST /checkout', () => {
   });
 
   test('rejects an unknown coupon code with 422', async () => {
-    Cart.find.mockReturnValue({ populate: () => Promise.resolve([{ sub_total: 100 }]) });
+    Cart.find.mockReturnValue({ populate: () => Promise.resolve([{ product_id: { _id: 'p1', price: 100 }, quantity: 1, sub_total: 100 }]) });
     Coupon.findOne.mockResolvedValue(null);
 
     const res = await request(app).post('/checkout').send({ coupon_code: 'NOPE' });
@@ -104,7 +104,7 @@ describe('POST /checkout', () => {
   });
 
   test('rejects a coupon whose min_spend exceeds the subtotal', async () => {
-    Cart.find.mockReturnValue({ populate: () => Promise.resolve([{ sub_total: 50 }]) });
+    Cart.find.mockReturnValue({ populate: () => Promise.resolve([{ product_id: { _id: 'p1', price: 50 }, quantity: 1, sub_total: 50 }]) });
     Coupon.findOne.mockResolvedValue({
       code: 'BIG100',
       type: 'fixed',

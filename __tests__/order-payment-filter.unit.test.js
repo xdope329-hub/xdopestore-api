@@ -49,20 +49,21 @@ function buildStatsApp({ orders = [], statuses = [], mpPaidCount = 0 } = {}) {
     countDocuments: jest.fn(async (f) => { calls.countDocuments.push(f); return f ? mpPaidCount : orders.length; }),
     aggregate: jest.fn(async (pipeline) => {
       const grouped = pipeline.find((p) => p.$group);
-      // revenue pipeline (has a $match on payment_status)
-      const match = pipeline.find((p) => p.$match);
-      if (match) {
-        const wanted = match.$match.payment_status;
-        const total = orders.filter((o) => o.payment_status === wanted).reduce((s, o) => s + o.total, 0);
-        return total ? [{ _id: null, total }] : [];
-      }
+      const match = pipeline.find((p) => p.$match)?.$match || {};
       // status pipeline: group by status_id
       if (grouped && grouped.$group._id === "$status_id") {
         const map = {};
         orders.forEach((o) => { const k = String(o.status_id); map[k] = (map[k] || 0) + 1; });
         return Object.entries(map).map(([_id, count]) => ({ _id, count }));
       }
-      return [];
+      // revenue pipeline: confirmed payment (cod, or a paid gateway status),
+      // not refunded/rejected and not cancelled (status_id $ne)
+      const paid = ["completed", "paid", "approved", "success"];
+      const cancelledId = match.status_id?.$ne ? String(match.status_id.$ne) : null;
+      const total = orders
+        .filter((o) => (o.payment_method === "cod" || paid.includes(o.payment_status)) && !["refunded", "rejected", "cancelled"].includes(o.payment_status) && String(o.status_id) !== cancelledId)
+        .reduce((s, o) => s + o.total, 0);
+      return total ? [{ _id: null, total }] : [];
     }),
   };
   const mk = (n) => ({ countDocuments: jest.fn(async () => n) });
@@ -137,7 +138,7 @@ describe("GET /statistics/count", () => {
     expect(res.body.total_approved_reviews).toBe(3);
     expect(res.body.total_rejected_reviews).toBe(0);
     // counted with the status a gateway approval actually writes
-    expect(calls.countDocuments).toContainEqual({ payment_method: "mercadopago", payment_status: "completed" });
+    expect(calls.countDocuments).toContainEqual({ payment_method: "mercadopago", payment_status: { $in: ["completed", "paid", "approved", "success"] } });
   });
 
   test("revenue sums completed payments (was matching a status that never existed)", async () => {

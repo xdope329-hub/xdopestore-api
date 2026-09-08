@@ -67,22 +67,19 @@ router.post('/login', loginLimiter, async (req, res) => {
   res.json({ ...session, data: user });
 });
 
-// POST /register
-router.post('/register', registerLimiter, verifyRecaptcha, async (req, res) => {
-  const Role = require('../models/Role');
-  const { name, email, password, phone, country_code } = req.body;
-  if (!name || !email || !password) {
-    return res.status(422).json({ message: 'Name, email and password are required' });
-  }
+// Alta de un cliente (la usan /register y /register/checkout): valida, crea
+// la cuenta, adopta los pedidos de invitado hechos con ese correo y devuelve
+// la sesión. { status, message } si falla; { status: 201, body } si no.
+async function createConsumerAccount({ name, email, password, phone, country_code } = {}, req) {
+  if (!name || !email || !password) return { status: 422, message: 'Name, email and password are required' };
   if (!isPasswordStrong(password)) {
-    return res.status(422).json({
-      message: 'Password must be 8-128 characters and contain at least one letter and one number',
-    });
+    return { status: 422, message: 'Password must be 8-128 characters and contain at least one letter and one number' };
   }
   const normalized = String(email).toLowerCase();
   const exists = await User.findOne({ email: normalized });
-  if (exists) return res.status(422).json({ message: 'Email already registered' });
+  if (exists) return { status: 422, message: 'Email already registered' };
 
+  const Role = require('../models/Role');
   const consumerRole = await Role.findOne({ name: 'consumer' });
   const user = await User.create({ name, email: normalized, password, phone, country_code, role: consumerRole?._id });
   const populated = await User.findById(user._id).populate('role');
@@ -96,8 +93,33 @@ router.post('/register', registerLimiter, verifyRecaptcha, async (req, res) => {
       { $set: { consumer_id: user._id, is_guest: false } }
     );
   } catch (e) { console.warn('[register] no se pudieron adoptar pedidos de invitado:', e.message); }
+  return { status: 201, body: { ...session, data: populated } };
+}
 
-  res.status(201).json({ ...session, data: populated });
+// POST /register
+router.post('/register', registerLimiter, verifyRecaptcha, async (req, res) => {
+  const result = await createConsumerAccount(req.body || {}, req);
+  if (result.status !== 201) return res.status(result.status).json({ message: result.message });
+  res.status(201).json(result.body);
+});
+
+// POST /register/checkout — "Crear cuenta" del checkout de invitados. No pasa
+// por reCAPTCHA (el checkout no tiene widget, y con la clave configurada el
+// alta en segundo plano fallaba con 422); en su lugar exige el pedido recién
+// creado con ese mismo correo como prueba de compra. Devuelve la sesión para
+// que la tienda deje al cliente logueado.
+const CHECKOUT_REGISTER_WINDOW_MS = 30 * 60 * 1000;
+router.post('/register/checkout', registerLimiter, async (req, res) => {
+  const { order_id, email } = req.body || {};
+  const mongoose = require('mongoose');
+  const Order = require('../models/Order');
+  const order = mongoose.Types.ObjectId.isValid(String(order_id || '')) ? await Order.findById(order_id) : null;
+  const sameEmail = Boolean(order?.guest_email) && order.guest_email === String(email || '').trim().toLowerCase();
+  const recent = Boolean(order) && Date.now() - new Date(order.createdAt || 0).getTime() < CHECKOUT_REGISTER_WINDOW_MS;
+  if (!order || !sameEmail || !recent) return res.status(422).json({ message: 'El pedido no corresponde a este correo' });
+  const result = await createConsumerAccount(req.body || {}, req);
+  if (result.status !== 201) return res.status(result.status).json({ message: result.message });
+  res.status(201).json(result.body);
 });
 
 // POST /login/google - Sign in with Google (Google Identity Services credential)

@@ -87,6 +87,10 @@ function transformOrder(order, { admin = false } = {}) {
   return obj;
 }
 
+const { isPaymentConfirmed } = require('../utils/orderStatusFlow');
+const { stockProblems, stockMessage, reserveStock } = require('../utils/stock');
+const { capacityProblem } = require('../utils/capacity');
+
 // Returns a Mongoose Query (not yet executed) or null
 function findOrderQuery(param) {
   const isObjectId = mongoose.Types.ObjectId.isValid(param) && String(new mongoose.Types.ObjectId(param)) === param;
@@ -143,51 +147,53 @@ router.post('/', auth, async (req, res) => {
     return handleStatusUpdate(req, res);
   }
 
-  const { billing_address, shipping_address, payment_method, coupon_total_discount = 0, shipping_total = 0, notes } = req.body;
-  const cartItems = await Cart.find({ consumer_id: req.user._id }).populate('product_id');
-  if (!cartItems.length) return res.status(422).json({ message: 'Cart is empty' });
-
-  const products = cartItems.map(i => {
-    const variation = findCartVariation(i.product_id, i.variation_id);
-    return {
-      product_id: i.product_id._id,
-      variation_id: i.variation_id,
-      // variation_name + variation_attributes (Color, Talla…) + sku
-      ...buildOrderLineSnapshot(i.product_id, variation),
-      name: i.product_id.name,
-      quantity: i.quantity,
-      // For variable products the unit price is the variant's, not the parent's.
-      price: variation ? (variation.sale_price ?? variation.price) : (i.product_id.sale_price || i.product_id.price),
-      sub_total: i.sub_total,
-    };
-  });
-
-  const amount = cartItems.reduce((s, i) => s + i.sub_total, 0);
-  const total = amount - coupon_total_discount + shipping_total;
-  const pendingStatus = await OrderStatus.findOne({ slug: 'pending' });
+  // Mismo constructor que el checkout de la tienda (payment.routes.js):
+  // precios, cupón y envío se calculan SIEMPRE en el servidor. Antes esta
+  // ruta aceptaba coupon_total_discount y shipping_total tal cual llegaban
+  // del cliente.
+  const { buildOrderFromCart } = require('./payment.routes');
+  let built;
+  try {
+    built = await buildOrderFromCart(req.user._id, req.body);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    throw err;
+  }
+  if (!built) return res.status(422).json({ message: 'Cart is empty' });
+  const problems = stockProblems(built.cartItems);
+  if (problems.length) return res.status(422).json({ message: stockMessage(problems), stock: problems });
+  const capacity = await capacityProblem(built.cartItems);
+  if (capacity) return res.status(422).json({ message: capacity.message, capacity: capacity.capacity });
 
   const order = await Order.create({
     consumer_id: req.user._id,
-    products,
-    billing_address,
-    shipping_address,
-    payment_method: payment_method || 'cod',
+    products: built.products,
+    billing_address: built.billing_address,
+    shipping_address: built.shipping_address,
+    payment_method: built.payment_method || 'cod',
     payment_status: 'pending',
-    amount,
-    coupon_total_discount,
-    shipping_total,
-    total,
-    status_id: pendingStatus?._id,
-    notes,
+    amount: built.amount,
+    coupon_total_discount: built.coupon_total_discount,
+    coupon_code: built.coupon_code,
+    shipping_total: built.shipping_total,
+    total: built.total,
+    status_id: built.pendingStatus?._id,
+    notes: built.notes,
+    delivery_description: built.delivery_description,
+    delivery_interval: built.delivery_interval,
   });
 
   await Cart.deleteMany({ consumer_id: req.user._id });
   const populated = await Order.findById(order._id).populate(populateDetail);
-
-  const mail = require('../services/mail');
-  mail
-    .sendOrderConfirmation({ order: populated.toJSON(), consumer: populated.consumer_id })
-    .catch(mail.logMailError('order-confirmation'));
+  // Solo con el pago confirmado (contra entrega): stock y correo. Un pedido
+  // de pasarela creado por aquí espera al webhook, como en el checkout.
+  if (isPaymentConfirmed(order)) {
+    reserveStock(order._id).catch((err) => console.error('[stock] reserve failed', err?.message || err));
+    const mail = require('../services/mail');
+    mail
+      .sendOrderConfirmation({ order: populated.toJSON(), consumer: populated.consumer_id })
+      .catch(mail.logMailError('order-confirmation'));
+  }
 
   res.status(201).json(transformOrder(populated));
 });
@@ -247,7 +253,12 @@ async function handleStatusUpdate(req, res) {
   const order = await Order.findById(found._id).populate(populateDetail);
   if (!order) return res.status(404).json({ message: 'Order not found' });
 
-  if (String(order.status_id?._id || order.status_id || '') !== prevStatusId) {
+  const statusChanged = String(order.status_id?._id || order.status_id || '') !== prevStatusId;
+  // El stock de una cancelación se repone en services/orderTransitions.js,
+  // común a todas las rutas que cambian el estado.
+  // Avisos al cliente solo con el pago confirmado (contra entrega o pasarela
+  // completada): un pedido de Mercado Pago sin pagar no genera correos.
+  if (statusChanged && isPaymentConfirmed(order)) {
     const mail = require('../services/mail');
     mail
       .sendOrderStatusUpdate({

@@ -15,7 +15,10 @@ describe('shipping zones', () => {
   const Shipping = { findOne: jest.fn(async () => shippingDoc) };
   const Coupon = { findOne: jest.fn(async () => null) };
   const Address = { findOne: jest.fn(async ({ _id }) => (_id === 'addr1' ? { city: 'Leticia' } : null)) };
-  const cartItems = [{ sub_total: 120000 }, { sub_total: 30000 }];
+  const cartItems = [
+    { product_id: { _id: 'p1', price: 120000 }, quantity: 1, sub_total: 120000 },
+    { product_id: { _id: 'p2', price: 30000 }, quantity: 1, sub_total: 30000 },
+  ];
   const Cart = { find: jest.fn(() => ({ populate: async () => cartItems })) };
 
   beforeAll(() => {
