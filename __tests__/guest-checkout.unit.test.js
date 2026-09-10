@@ -54,6 +54,25 @@ describe('guest checkout', () => {
 
   beforeEach(() => { createdOrder = undefined; });
 
+  test.each([{}, { city: '' }, { city: '   ' }])('empty checkout address %j does not select a shipping zone', async (address) => {
+    const res = await request(app).post('/checkout').send({
+      products: [{ product_id: 'p1', variation_id: 'v1', quantity: 1 }],
+      shipping_address: address,
+      billing_address: { ...address, same_shipping: true },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ shipping_total: 0, shipping_quote: null, total: 140000 });
+  });
+
+  test.each([['Bogotá', 9900], ['Medellín', 9900], ['Leticia', 14900]])('selected city %s determines shipping', async (city, amount) => {
+    const res = await request(app).post('/checkout').send({
+      products: [{ product_id: 'p1', variation_id: 'v1', quantity: 1 }],
+      shipping_address: { city },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ shipping_total: amount, total: 140000 + amount });
+  });
+
   test('vista previa: precios reconstruidos desde la BD, no del cliente', async () => {
     const res = await request(app).post('/checkout').send({
       products: [{ product_id: 'p1', variation_id: 'v1', quantity: 2, sub_total: 2 }],

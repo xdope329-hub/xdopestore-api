@@ -57,10 +57,10 @@ router.post('/', checkoutLimiter, optionalAuth, async (req, res) => {
   // Envío por zonas según la ciudad de entrega (0 mientras no haya ciudad,
   // y gratis al superar el umbral — ver src/utils/shippingQuote.js).
   const { quoteShipping } = require('../utils/shippingQuote');
-  // Con una dirección elegida se cotiza aunque no traiga ciudad (zona 2,
-  // igual que hará el pedido); sin dirección todavía, 0.
-  const hasAddress = Boolean(city || addressId || req.body.shipping_address || req.body.billing_address);
-  let quote = hasAddress ? await quoteShipping(city, subtotal) : null;
+  // Formik sends empty address objects before the user selects a city.
+  // Those objects must not trigger the fallback zone's shipping charge.
+  const hasCity = typeof city === 'string' && city.trim().length > 0;
+  let quote = hasCity ? await quoteShipping(city, subtotal) : null;
   // Cupón de envío gratis: anula el costo de envío de cualquier zona.
   if (quote && couponFreeShipping && quote.amount > 0) {
     quote = { ...quote, amount: 0, free_shipping: true };
