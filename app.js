@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const path = require('path');
 const methodOverride = require('method-override');
 
@@ -16,6 +17,14 @@ process.on('uncaughtException', (err) => {
 
 const app = express();
 
+// Security headers (HSTS, nosniff, frame/referrer policies…). CSP is off:
+// this API only serves JSON and uploaded files, and the storefront/admin
+// apps live on other origins that must be able to embed those files.
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+
 // Trust one proxy hop. Render (and any similar PaaS) puts a reverse proxy
 // in front of your service; without this, express-rate-limit sees every
 // request as coming from the proxy IP and would rate-limit all users as
@@ -30,35 +39,26 @@ app.set('trust proxy', 1);
 //   - Any *.vercel.app deploy from the xdope-s-projects team - this auto-
 //     covers both production aliases (xdopestore-..., admin-dashboard-...)
 //     AND every preview deploy hash. No editing on each new commit.
-const staticAllowed = [
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'http://localhost:3002',
-];
-const envAllowed = []
-  .concat(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : [])
-  .concat(
-    process.env.CORS_ORIGINS
-      ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
-      : []
-  );
-const allowedOrigins = staticAllowed.concat(envAllowed);
-
-// Matches any deploy URL in the xdope-s-projects Vercel team:
-//   https://<project>-<deploy-hash>-xdope-s-projects.vercel.app
-const VERCEL_TEAM_ORIGIN = /^https:\/\/[a-z0-9-]+-xdope-s-projects\.vercel\.app$/;
+// Lista y patrón de Vercel en utils/corsOrigins.js (puro y testeado). Solo
+// los proyectos conocidos del equipo (VERCEL_PROJECTS) son orígenes de
+// confianza; antes lo era cualquier proyecto del equipo.
+const { buildAllowedOrigins } = require('./src/utils/corsOrigins');
+const corsOrigins = buildAllowedOrigins(process.env);
 
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
-    if (allowedOrigins.includes(origin)) return cb(null, true);
-    if (VERCEL_TEAM_ORIGIN.test(origin)) return cb(null, true);
+    if (corsOrigins.isAllowed(origin)) return cb(null, true);
     return cb(new Error('Not allowed by CORS: ' + origin));
   },
   credentials: true,
 }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+// Body size: only the admin's big JSON documents (settings, theme options,
+// presets, home page layout) need 10 MB; everything else, including the
+// public login/register/webhook endpoints, gets the 1 MB default.
+app.use(['/settings', '/themeOptions', '/presets', '/homepage', '/home'], express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 // Support _method override (Laravel-style) — admin frontend uses POST + _method:"put" for updates
 app.use(methodOverride((req) => {
   if (req.body && typeof req.body === 'object' && '_method' in req.body) {
@@ -67,11 +67,21 @@ app.use(methodOverride((req) => {
     return method;
   }
 }));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Uploaded files are downloads, not pages: force download for anything that
+// is not an image so a crafted HTML/SVG/PDF cannot run in the API's origin.
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  setHeaders: (res, filePath) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (!/\.(png|jpe?g|gif|webp|avif)$/i.test(filePath)) {
+      res.setHeader('Content-Disposition', 'attachment');
+    }
+  },
+}));
 
 // Routes
 app.use('/', require('./src/routes/auth.routes'));
 app.use('/settings', require('./src/routes/settings.routes'));
+app.use('/capacity', require('./src/routes/capacity.routes'));
 app.use('/product', require('./src/routes/product.routes'));
 app.use('/category', require('./src/routes/category.routes'));
 app.use('/brand', require('./src/routes/brand.routes'));
@@ -85,6 +95,7 @@ app.use('/role', require('./src/routes/role.routes'));
 app.use('/coupon', require('./src/routes/coupon.routes'));
 app.use('/shipping', require('./src/routes/shipping.routes'));
 app.use('/blog', require('./src/routes/blog.routes'));
+app.use('/page', require('./src/routes/page.routes'));
 app.use('/review', require('./src/routes/review.routes'));
 app.use('/wishlist', require('./src/routes/wishlist.routes'));
 app.use('/compare', require('./src/routes/compare.routes'));
@@ -97,6 +108,7 @@ app.use('/orderStatus', require('./src/routes/orderStatus.routes'));
 app.use('/statistics', require('./src/routes/statistics.routes'));
 app.use('/dashboard', require('./src/routes/statistics.routes'));
 app.use('/presets', require('./src/routes/preset.routes'));
+app.use('/refund', require('./src/routes/refund.routes'));
 app.use('/', require('./src/routes/cart.sync.routes'));
 app.use('/', require('./src/routes/misc.routes'));
 
@@ -119,6 +131,16 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ message: `Error de subida: ${err.message}` });
   }
 
+  // Mongoose validation failures are the caller's fault, not a server crash —
+  // surface them as a readable 422 the admin can show in a toast.
+  if (err && err.name === 'ValidationError' && err.errors) {
+    const fields = Object.keys(err.errors);
+    const message = Object.values(err.errors).map((e) => e.message).join(' · ');
+    return res.status(422).json({ message: message || 'Validation failed', fields });
+  }
+  if (err && err.name === 'CastError') {
+    return res.status(422).json({ message: `Invalid value for ${err.path}`, fields: [err.path] });
+  }
   res.status(err.status || 500).json({ message: err.message || 'Internal Server Error' });
 });
 

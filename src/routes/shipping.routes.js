@@ -11,6 +11,26 @@ router.get('/', async (req, res) => {
   res.json({ current_page: page, last_page: Math.ceil(total / limit), total, per_page: limit, data });
 });
 
+// GET /shipping/cities — ciudades por departamento para el dropdown de
+// direcciones (público). También marca cuáles son Zona 1.
+router.get('/cities', (req, res) => {
+  const { CITIES_BY_DEPARTMENT, isZone1City } = require('../data/colombiaCities');
+  const departments = Object.entries(CITIES_BY_DEPARTMENT).map(([department, cities]) => ({
+    department,
+    cities: cities.map((name) => ({ name, zone: isZone1City(name) ? 1 : 2 })),
+  }));
+  res.json({ data: departments });
+});
+
+// GET /shipping/quote?city=Bogotá&subtotal=150000 — cotiza el envío por
+// zona para la ciudad dada (público; el checkout la usa para mostrar el
+// valor en vivo — el cobro real se recalcula en el servidor al pagar).
+router.get('/quote', async (req, res) => {
+  const { quoteShipping } = require('../utils/shippingQuote');
+  const quote = await quoteShipping(req.query.city || '', Number(req.query.subtotal) || 0);
+  res.json(quote);
+});
+
 router.get('/:id', async (req, res) => {
   const s = await Shipping.findById(req.params.id);
   if (!s) return res.status(404).json({ message: 'Not found' });

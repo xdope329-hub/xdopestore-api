@@ -24,6 +24,11 @@ const userSchema = new mongoose.Schema({
   otp_expires_at: Date,                 // OTP lifetime (15 min)
   otp_verified_at: Date,                // when the OTP was successfully verified
   otp_verified_expires_at: Date,        // deadline to call /update-password (10 min)
+  otp_attempts: { type: Number, default: 0 }, // failed verifications; OTP invalidated at the limit
+  // Token de un solo uso emitido al verificar el OTP: /update-password lo
+  // exige (hash guardado), así conocer solo el correo ya no basta.
+  password_reset_token_hash: String,
+  password_reset_expires_at: Date,
 }, {
   timestamps: true,
   toJSON: {
@@ -35,6 +40,9 @@ const userSchema = new mongoose.Schema({
       delete ret.otp_expires_at;
       delete ret.otp_verified_at;
       delete ret.otp_verified_expires_at;
+      delete ret.otp_attempts;
+      delete ret.password_reset_token_hash;
+      delete ret.password_reset_expires_at;
       return ret;
     },
   },

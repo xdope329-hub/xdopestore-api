@@ -4,7 +4,7 @@ const PaymentGateway = require('../PaymentGateway');
  * Adapter para Mercado Pago — Checkout Pro (flujo de redirect).
  *
  * Variables de entorno requeridas:
- *   MP_ACCESS_TOKEN  — Access Token de producción o sandbox
+ *   MP_ACCESS_TOKEN  — Access Token (credenciales de prueba o de producción)
  *   BASE_URL         — URL pública del backend (para notification_url)
  *   STORE_URL        — URL pública del frontend (para back_urls)
  *
@@ -21,29 +21,90 @@ class MercadoPagoAdapter extends PaymentGateway {
     const client = this._getClient();
     const preference = new Preference(client);
 
-    const body = {
-      items: order.products.map(p => ({
+    // Mercado Pago rejects `auto_return` when the back_urls are not publicly
+    // reachable (e.g. http://localhost:3001 in local dev) with the error
+    // "auto_return invalid. back_url.success must be defined". Locally we
+    // omit auto_return (the buyer clicks "Volver al sitio" manually) and the
+    // webhook URL (MP can't reach localhost anyway — /payment/verify on the
+    // return page confirms the payment instead).
+    const storeUrl = process.env.STORE_URL || '';
+    const baseUrl = process.env.BASE_URL || '';
+    const isLocal = (u) => /localhost|127\.0\.0\.1/i.test(u);
+
+    // ── Items: el total cobrado por MP debe ser EXACTAMENTE order.total ──────
+    // order.total = productos − cupón + envío (calculado en el servidor).
+    // Sin cupón: se envían los productos itemizados. Con cupón: MP no acepta
+    // ítems negativos, así que se consolida en un solo ítem con el valor ya
+    // descontado (el detalle queda en la orden y en el correo de la tienda).
+    // El peso colombiano no tiene centavos y MP rechaza decimales en COP
+    // ("unit_price must be an integer"): un precio como 79.999,50 (50% de
+    // 159.999) tumbaba el pago. Todo lo que viaja a MP se redondea a pesos.
+    const toPesos = (n) => Math.round(Number(n) || 0);
+    const discount = Number(order.coupon_total_discount || 0);
+    const shippingCost = toPesos(order.shipping_total);
+    const target = toPesos(order.total);
+    const itemsTarget = target - shippingCost;
+    const itemCount = order.products.reduce((s, p) => s + Number(p.quantity), 0);
+    const consolidated = (suffix = '') => [{
+      id: String(order._id),
+      title: `Pedido XDOPE (${itemCount} producto${itemCount === 1 ? '' : 's'}${suffix})`,
+      quantity: 1,
+      unit_price: itemsTarget,
+      currency_id: 'COP',
+    }];
+
+    let items;
+    if (discount > 0) {
+      items = consolidated(order.coupon_code ? `, cupón ${order.coupon_code}` : '');
+    } else {
+      items = order.products.map(p => ({
         id: String(p.product_id),
         title: p.name,
         quantity: Number(p.quantity),
-        unit_price: Number(p.price),
+        unit_price: toPesos(p.price),
         currency_id: 'COP',
-      })),
+      }));
+      // Precios con centavos: al redondear cada unidad la suma puede
+      // desviarse del total real por unos pesos. Antes que cobrar un valor
+      // distinto al del checkout, se consolida en un solo ítem por el total.
+      // Solo cubre desvíos de redondeo (máximo medio peso por unidad); una
+      // diferencia mayor es una orden inconsistente y la frena la guardia.
+      const itemized = items.reduce((s, it) => s + it.unit_price * it.quantity, 0);
+      if (itemized !== itemsTarget && Math.abs(itemized - itemsTarget) <= itemCount) items = consolidated();
+    }
+
+    // Verificación de consistencia: ítems + envío == total de la orden.
+    // Si algún cambio futuro rompe la fórmula, es mejor frenar aquí que
+    // cobrar un valor distinto al mostrado en el checkout.
+    const itemsTotal = items.reduce((s, it) => s + it.unit_price * it.quantity, 0);
+    if (itemsTotal + shippingCost !== target || items.some((it) => !Number.isInteger(it.unit_price) || it.unit_price <= 0)) {
+      throw new Error(`Preferencia MP inconsistente: items ${itemsTotal} + envío ${shippingCost} != total ${order.total}`);
+    }
+
+    const body = {
+      items,
+      // Envío como costo de shipment — MP lo muestra como línea de envío y
+      // lo suma al total cobrado.
+      ...(shippingCost > 0 ? { shipments: { cost: shippingCost, mode: 'not_specified' } } : {}),
       external_reference: String(order._id),
       back_urls: {
-        success: `${process.env.STORE_URL}/order/success?id=${order._id}`,
-        failure: `${process.env.STORE_URL}/order/failure?id=${order._id}`,
-        pending: `${process.env.STORE_URL}/order/pending?id=${order._id}`,
+        success: `${storeUrl}/order/success?id=${order._id}`,
+        failure: `${storeUrl}/order/failure?id=${order._id}`,
+        pending: `${storeUrl}/order/pending?id=${order._id}`,
       },
-      auto_return: 'approved',
-      notification_url: `${process.env.BASE_URL}/payment/webhook`,
+      ...(isLocal(storeUrl) ? {} : { auto_return: 'approved' }),
+      ...(isLocal(baseUrl) ? {} : { notification_url: `${baseUrl}/payment/webhook` }),
     };
 
     const result = await preference.create({ body });
-    // En producción usar result.init_point; en sandbox usar result.sandbox_init_point
-    const redirect_url = process.env.MP_SANDBOX === 'true'
-      ? result.sandbox_init_point
-      : result.init_point;
+    // Siempre init_point. El antiguo sandbox_init_point apunta a
+    // sandbox.mercadopago.com.co, dominio legado que hoy entra en un bucle de
+    // redirecciones (ERR_TOO_MANY_REDIRECTS). El entorno de prueba se decide
+    // por las CREDENCIALES (de prueba vs. producción), no por la URL: con
+    // credenciales de prueba, init_point ya abre un checkout de prueba.
+    // MP_SANDBOX queda solo como bandera informativa (banner QA, logs).
+    const redirect_url = result.init_point || result.sandbox_init_point;
+    if (!redirect_url) throw new Error('Mercado Pago no devolvió init_point para la preferencia');
 
     return { redirect_url, preference_id: result.id };
   }

@@ -26,6 +26,9 @@ describe('POST /payment/initialize', () => {
     jest.doMock('../src/models/Order', () => Order);
     jest.doMock('../src/models/OrderStatus', () => OrderStatus);
     jest.doMock('../src/models/Address', () => Address);
+    // Cotización de envío por zonas (agregada después de este test): sin DB,
+    // el modelo real se queda esperando conexión — findOne null usa defaults.
+    jest.doMock('../src/models/Shipping', () => ({ findOne: jest.fn().mockResolvedValue(null) }));
     jest.doMock('../src/services/payment/PaymentFactory', () => ({
       getGateway: () => codGatewaySpy,
     }));

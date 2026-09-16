@@ -1,5 +1,7 @@
 // Misc routes — stubs + real implementations for Tax, ThemeOptions and Tag
 const router = require('express').Router();
+const { publicFormLimiter } = require('../middleware/rateLimiters');
+const { isAdminUser } = require('../utils/roles');
 const slugify = require('slugify');
 const Order = require('../models/Order');
 const Tax = require('../models/Tax');
@@ -7,16 +9,30 @@ const Tag = require('../models/Tag');
 const ThemeOption = require('../models/ThemeOption');
 const Question = require('../models/Question');
 const auth = require('../middleware/auth');
+const optionalAuth = require('../middleware/optionalAuth');
 const adminOnly = require('../middleware/adminOnly');
 const { transformTag } = require('../utils/transform');
+const { orderMatchesContact } = require('../utils/orderTracking');
+// Vista del pedido compartida con GET /order/:id (misma forma para la tienda).
+const { transformOrder, populateDetail } = require('./order.routes');
 
 const transformQuestion = (q) => {
   if (!q) return q;
   const obj = q.toJSON ? q.toJSON() : q;
   if (obj.createdAt !== undefined) obj.created_at = obj.createdAt;
   if (obj.updatedAt !== undefined) obj.updated_at = obj.updatedAt;
-  // expose product summary under the `product` alias the dashboard table expects
-  if (obj.product_id && typeof obj.product_id === 'object') obj.product = obj.product_id;
+  // `product` / `consumer`: objetos poblados (el admin lee product.name);
+  // `product_id` / `consumer_id`: siempre el id plano, para que la tienda
+  // pueda comparar con el usuario en sesión sin importar si vino poblado.
+  if (obj.product_id && typeof obj.product_id === 'object') {
+    obj.product = obj.product_id;
+    obj.product_id = String(obj.product_id._id || obj.product_id.id);
+  }
+  if (obj.consumer_id && typeof obj.consumer_id === 'object') {
+    obj.consumer = { id: obj.consumer_id._id || obj.consumer_id.id, name: obj.consumer_id.name };
+    obj.consumer_id = String(obj.consumer_id._id || obj.consumer_id.id);
+  }
+  obj.is_answered = !!(obj.answer && String(obj.answer).trim());
   return obj;
 };
 
@@ -77,7 +93,7 @@ router.post('/themeOptions', auth, adminOnly, async (req, res) => {
 
 // GET /theme
 router.get('/theme', (req, res) => res.json({ current_page: 1, last_page: 1, total: 1, per_page: 15, data: [{ id: '1', _id: '1', name: 'Fashion One', slug: 'fashion_one', status: 1 }] }));
-router.put('/theme/:id?', ok);
+router.put('/theme/:id?', auth, adminOnly, ok);
 
 // Tag CRUD
 router.get('/tag', async (req, res) => {
@@ -204,8 +220,8 @@ router.delete('/tax/:id', auth, adminOnly, async (req, res) => {
 // GET /store
 router.get('/store', emptyList);
 router.get('/store/:id', async (req, res) => res.json({}));
-router.post('/store', ok);
-router.put('/store/:id', ok);
+router.post('/store', auth, adminOnly, ok);
+router.put('/store/:id', auth, adminOnly, ok);
 
 // GET /page
 router.get('/page', emptyList);
@@ -216,9 +232,9 @@ router.delete('/page/:id', ok);
 
 // GET /faq
 router.get('/faq', emptyList);
-router.post('/faq', ok);
-router.put('/faq/:id', ok);
-router.delete('/faq/:id', ok);
+router.post('/faq', auth, adminOnly, ok);
+router.put('/faq/:id', auth, adminOnly, ok);
+router.delete('/faq/:id', auth, adminOnly, ok);
 
 // ───────────────────────── Question & Answer ─────────────────────────
 // GET /question-and-answer — list (filter by product_id, status=pending|answered, search)
@@ -257,9 +273,16 @@ router.get('/question-and-answer/:id', async (req, res) => {
 
 // POST /question-and-answer — customer posts a question (must be logged in)
 router.post('/question-and-answer', auth, async (req, res) => {
-  const { question, product_id } = req.body;
+  const { product_id } = req.body;
+  const question = typeof req.body.question === 'string' ? req.body.question.trim() : '';
   if (!question || !product_id) {
     return res.status(400).json({ message: 'question and product_id are required' });
+  }
+  // Una sola pregunta por producto y cliente: si ya hizo una puede editarla
+  // (mientras no esté respondida), no abrir otra.
+  const existing = await Question.findOne({ product_id, consumer_id: req.user._id });
+  if (existing) {
+    return res.status(409).json({ message: 'Ya publicaste una pregunta sobre este producto', question_id: existing._id });
   }
   const created = await Question.create({
     question,
@@ -279,7 +302,7 @@ router.put('/question-and-answer/:id', auth, async (req, res) => {
   const existing = await Question.findById(req.params.id);
   if (!existing) return res.status(404).json({ message: 'Question not found' });
 
-  const isAdmin = req.user?.role?.name === 'admin' || req.user?.role?.slug === 'admin';
+  const isAdmin = isAdminUser(req.user);
   const isOwner = existing.consumer_id && existing.consumer_id.toString() === req.user._id.toString();
 
   const update = {};
@@ -340,42 +363,107 @@ router.post('/question-and-answer/feedback', auth, async (req, res) => {
 
 // Menu CRUD
 const Menu = require('../models/Menu');
+const mongooseLib = require('mongoose');
+
+// The admin form sends "" for unset ObjectId fields and expects numeric
+// toggles — normalize so Mongoose casting never throws.
+function scrubMenuBody(body) {
+  const clean = { ...body };
+  for (const key of ['parent_id', 'banner_image_id', 'item_image_id']) {
+    if (clean[key] === '' || clean[key] === undefined) clean[key] = null;
+    // MultiSelect may hand us an array with a single id
+    if (Array.isArray(clean[key])) clean[key] = clean[key][0] || null;
+  }
+  for (const key of ['mega_menu', 'is_target_blank', 'status', 'sort_order']) {
+    if (clean[key] !== undefined) clean[key] = Number(clean[key]) || 0;
+  }
+  delete clean._method;
+  delete clean._id;
+  delete clean.id;
+  return clean;
+}
+
+const isValidMenuId = (id) => mongooseLib.Types.ObjectId.isValid(id) && String(id).length === 24;
+
+// Nest children under their parents (parent_id based). Falls back to the
+// legacy inline `item` array used by seeded menus so old data still shows
+// submenus in the storefront.
+function buildMenuTree(items) {
+  const json = items.map((i) => (i.toJSON ? i.toJSON() : i));
+  const byParent = new Map();
+  json.forEach((i) => {
+    const key = i.parent_id ? String(i.parent_id) : null;
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(i);
+  });
+  const attach = (node) => {
+    let children = byParent.get(String(node._id)) || [];
+    if (children.length === 0 && Array.isArray(node.item) && node.item.length > 0) {
+      children = node.item.map((c, idx) => ({ ...c, id: c.id || `${node.id}-legacy-${idx}`, link_type: c.link_type || 'link', legacy: true }));
+    }
+    if (children.length > 0) node.child = children.map(attach);
+    return node;
+  };
+  return (byParent.get(null) || []).map(attach);
+}
 
 router.get('/menu', async (req, res) => {
   let items = await Menu.find({ status: 1 }).sort({ sort_order: 1, createdAt: 1 });
   if (items.length === 0) {
     const defaults = [
-      { title: 'Home', path: '/', class: '0', sort_order: 0 },
-      { title: 'Shop', path: '/collections', class: '0', sort_order: 1 },
-      { title: 'About Us', path: '/about-us', class: '0', sort_order: 2 },
-      { title: 'Contact', path: '/contact-us', class: '0', sort_order: 3 },
+      { title: 'Inicio', path: '/', class: '0', sort_order: 0 },
+      { title: 'Tienda', path: '/collections', class: '0', sort_order: 1 },
+      { title: 'Nosotros', path: '/about-us', class: '0', sort_order: 2 },
+      { title: 'Contacto', path: '/contact-us', class: '0', sort_order: 3 },
     ];
     items = await Menu.insertMany(defaults);
   }
-  res.json({ data: items });
+  let tree = buildMenuTree(items);
+  if (req.query.search) {
+    const q = String(req.query.search).toLowerCase();
+    tree = tree.filter((i) => i.title?.toLowerCase().includes(q) || (i.child || []).some((c) => c.title?.toLowerCase().includes(q)));
+  }
+  res.json({ data: tree });
 });
 router.post('/menu', auth, adminOnly, async (req, res) => {
   const count = await Menu.countDocuments();
-  const item = await Menu.create({ ...req.body, sort_order: count });
+  const item = await Menu.create({ ...scrubMenuBody(req.body), sort_order: count });
   res.status(201).json(item);
 });
 router.put('/menu/sort', auth, adminOnly, async (req, res) => {
   const items = req.body?.data || req.body || [];
-  await Promise.all(items.map((item, i) => Menu.findByIdAndUpdate(item.id || item._id, { sort_order: i })));
+  const flat = [];
+  const walk = (arr) => arr.forEach((i) => { flat.push(i); if (Array.isArray(i.child)) walk(i.child); });
+  walk(Array.isArray(items) ? items : []);
+  await Promise.all(flat
+    .filter((item) => isValidMenuId(item.id || item._id))
+    .map((item, i) => Menu.findByIdAndUpdate(item.id || item._id, { sort_order: i })));
   res.json({ message: 'ok' });
 });
+// GET /menu/:id — the admin edit page loads a single item here
+router.get('/menu/:id', async (req, res) => {
+  if (!isValidMenuId(req.params.id)) return res.status(404).json({ message: 'Menu item not found' });
+  const item = await Menu.findById(req.params.id);
+  if (!item) return res.status(404).json({ message: 'Menu item not found' });
+  res.json(item);
+});
 router.put('/menu/:id', auth, adminOnly, async (req, res) => {
-  const item = await Menu.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  if (!isValidMenuId(req.params.id)) return res.status(404).json({ message: 'Menu item not found' });
+  const item = await Menu.findByIdAndUpdate(req.params.id, scrubMenuBody(req.body), { new: true });
   if (!item) return res.status(404).json({ message: 'Menu item not found' });
   res.json(item);
 });
 router.delete('/menu/:id', auth, adminOnly, async (req, res) => {
-  await Menu.findByIdAndDelete(req.params.id);
+  if (!isValidMenuId(req.params.id)) return res.status(404).json({ message: 'Menu item not found' });
+  const item = await Menu.findByIdAndDelete(req.params.id);
+  if (!item) return res.status(404).json({ message: 'Menu item not found' });
+  // Cascade: children of a deleted parent would become orphans no menu shows
+  await Menu.deleteMany({ parent_id: req.params.id });
   res.json({ message: 'ok' });
 });
 
 // POST /subscribe — newsletter opt-in, forwards to Brevo contact list
-router.post('/subscribe', async (req, res) => {
+router.post('/subscribe', publicFormLimiter, async (req, res) => {
   const email = req.body?.email;
   const name = req.body?.name;
   if (!email || !/^\S+@\S+\.\S+$/.test(String(email))) {
@@ -403,10 +491,10 @@ router.post('/subscribe', async (req, res) => {
 // GET /notice
 router.get('/notice', emptyList);
 router.get('/notice/recent', emptyData);
-router.put('/notice/markAsRead', ok);
+router.put('/notice/markAsRead', auth, ok);
 
 // GET /contact-us
-router.post('/contact-us', ok);
+router.post('/contact-us', publicFormLimiter, ok);
 
 // GET /commissionHistory
 router.get('/commissionHistory', emptyList);
@@ -418,47 +506,54 @@ router.get('/commissionHistory', emptyList);
 
 // GET /withdrawRequest
 router.get('/withdrawRequest', emptyList);
-router.post('/withdrawRequest', ok);
+router.post('/withdrawRequest', auth, adminOnly, ok);
 
-// GET /refund
-router.get('/refund', emptyList);
-router.post('/refund', ok);
-router.put('/refund/:id', ok);
+// /refund vive en routes/refund.routes.js (solicitudes reales de reembolso).
 
 // GET /badge — counts for admin dashboard notification badges
-router.get('/badge', auth, async (req, res) => {
+router.get('/badge', auth, adminOnly, async (req, res) => {
   const Product = require('../models/Product');
   const Order = require('../models/Order');
-  const [unapprovedProducts, pendingOrders] = await Promise.all([
+  const OrderStatus = require('../models/OrderStatus');
+  // "Pedidos pendientes" = estado del PEDIDO pendiente, no del pago.
+  const pendingStatus = await OrderStatus.findOne({ slug: 'pending' }, '_id');
+  const Review = require('../models/Review');
+  const Refund = require('../models/Refund');
+  const { REVIEW_STATUS } = require('../utils/reviewModeration');
+  const [unapprovedProducts, pendingOrders, pendingReviews, pendingRefunds] = await Promise.all([
     Product.countDocuments({ is_approved: false }),
-    Order.countDocuments({ payment_status: 'pending' }),
+    pendingStatus ? Order.countDocuments({ status_id: pendingStatus._id }) : Promise.resolve(0),
+    Review.countDocuments({ status: REVIEW_STATUS.PENDING }),
+    Refund.countDocuments({ status: 'pending' }),
   ]);
   res.json({
     data: {
       product: { total_in_approved_products: unapprovedProducts },
       store: { total_in_approved_stores: 0 },
-      refund: { total_pending_refunds: 0 },
+      refund: { total_pending_refunds: pendingRefunds },
       withdraw_request: { total_pending_withdraw_requests: 0 },
+      // Reseñas esperando moderación: insignia del menú "Reseñas".
+      review: { total_pending_reviews: pendingReviews },
     },
   });
 });
 
 // GET /points/consumer
 router.get('/points/consumer', auth, async (req, res) => res.json({ data: { balance: 0, transactions: [] } }));
-router.post('/credit/points', ok);
-router.post('/debit/points', ok);
+router.post('/credit/points', auth, adminOnly, ok);
+router.post('/debit/points', auth, adminOnly, ok);
 
 // Vendor wallet stubs
 router.get('/wallet/vendor', ok);
-router.post('/credit/vendorWallet', ok);
-router.post('/debit/vendorWallet', ok);
+router.post('/credit/vendorWallet', auth, adminOnly, ok);
+router.post('/debit/vendorWallet', auth, adminOnly, ok);
 
 // Payment stubs
-router.post('/verifyPayment', ok);
-router.post('/rePayment', ok);
+router.post('/verifyPayment', auth, adminOnly, ok);
+router.post('/rePayment', auth, adminOnly, ok);
 
 // GET /module — permission modules list for role creation form
-router.get('/module', auth, async (req, res) => {
+router.get('/module', auth, adminOnly, async (req, res) => {
   const { getModuleList } = require('../data/permissions');
   res.json({ data: getModuleList() });
 });
@@ -470,27 +565,63 @@ router.get('/license-key', async (req, res) => res.json({ data: { status: 'activ
 router.get('/app/settings', async (req, res) => res.json({ data: {} }));
 
 // GET /trackOrder
-router.get('/trackOrder', auth, async (req, res) => {
-  const { order_number } = req.query;
-  const order = await Order.findOne({ order_number }).populate('status_id');
+// Dueño del pedido (o administrador) con sesión: acceso directo. Cualquier
+// otro visitante debe indicar el correo o teléfono de la compra (abajo).
+const isOrderOwnerOrAdmin = (req, order) =>
+  isAdminUser(req.user) ||
+  (order?.consumer_id && String(order.consumer_id?._id || order.consumer_id) === String(req.user?._id));
+
+// El payload crudo de la pasarela y sus campos de diagnóstico son solo
+// para administradores.
+const customerOrderView = (req, order) => {
+  const obj = order.toJSON ? order.toJSON() : { ...order };
+  if (!isAdminUser(req.user)) ['payment_gateway_response', 'payment_error', 'payment_gateway_status'].forEach((f) => { delete obj[f]; });
+  return obj;
+};
+
+// Sin sesión aplica el limitador anti-spam de formularios públicos: el
+// seguimiento de invitados no debe servir para adivinar número + correo.
+const guestTrackingLimiter = (req, res, next) => (req.user ? next() : publicFormLimiter(req, res, next));
+
+// Seguimiento PÚBLICO: número de pedido + correo o teléfono con los que se
+// compró (también invitados). Antes exigía sesión (401) y el invitado nunca
+// podía seguir su pedido. "No existe" y "no coincide" responden igual (404):
+// los números de pedido son secuenciales y no se confirman.
+router.get('/trackOrder', optionalAuth, guestTrackingLimiter, async (req, res) => {
+  const orderNumber = parseInt(req.query.order_number, 10);
+  if (Number.isNaN(orderNumber)) return res.status(404).json({ message: 'Order not found' });
+  const order = await Order.findOne({ order_number: orderNumber }).populate(populateDetail);
   if (!order) return res.status(404).json({ message: 'Order not found' });
-  res.json(order);
+  if (!isOrderOwnerOrAdmin(req, order) && !orderMatchesContact(order, req.query.email_or_phone)) {
+    return res.status(404).json({ message: 'Order not found' });
+  }
+  const payload = transformOrder(order, { admin: isAdminUser(req.user) });
+  // Sin sesión no viajan los datos de la cuenta del comprador.
+  if (!req.user) {
+    delete payload.consumer;
+    delete payload.consumer_id;
+  }
+  res.json(payload);
 });
 
 // GET /order/invoice/:id
 router.get('/order/invoice/:id', auth, async (req, res) => {
   const order = await Order.findById(req.params.id).populate('consumer_id').populate('status_id');
-  if (!order) return res.status(404).json({ message: 'Order not found' });
-  res.json(order);
+  if (!order || !isOrderOwnerOrAdmin(req, order)) return res.status(404).json({ message: 'Order not found' });
+  res.json(customerOrderView(req, order));
 });
 
 // POST /login/number
 router.post('/login/number', async (req, res) => res.status(501).json({ message: 'Phone login not implemented' }));
 
 // GET /updateStoreProfile
-router.put('/updateStoreProfile', ok);
+router.put('/updateStoreProfile', auth, adminOnly, ok);
 
 // product approve
-router.put('/approve/:id', ok);
+router.put('/approve/:id', auth, adminOnly, ok);
+
+// exposed for unit tests
+router.buildMenuTree = buildMenuTree;
+router.scrubMenuBody = scrubMenuBody;
 
 module.exports = router;

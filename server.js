@@ -26,6 +26,9 @@ console.log('[startup] JWT_SECRET set:', Boolean(process.env.JWT_SECRET));
 console.log('[startup] CLOUDINARY_CLOUD_NAME set:', Boolean(process.env.CLOUDINARY_CLOUD_NAME));
 console.log('[startup] CLOUDINARY_API_KEY set:', Boolean(process.env.CLOUDINARY_API_KEY));
 console.log('[startup] CLOUDINARY_API_SECRET set:', Boolean(process.env.CLOUDINARY_API_SECRET));
+// Sin esta clave no sale NINGÚN correo (confirmación de pedido, cambios de
+// estado, recuperación de contraseña): services/mail los omite con un aviso.
+console.log('[startup] BREVO_API_KEY set:', Boolean(process.env.BREVO_API_KEY));
 
 // Bracket each require so a synchronous throw in the import chain is
 // pinpointed instead of producing a silent "Exited with status 1".

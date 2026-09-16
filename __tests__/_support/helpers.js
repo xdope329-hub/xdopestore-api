@@ -30,6 +30,13 @@ function mockAuth(role) {
     req.user = isAdmin ? TEST_ADMIN : TEST_USER;
     next();
   });
+  // Rutas con autenticación opcional (checkout de invitados) usan el
+  // middleware optionalAuth, no auth — sin esto, un test "autenticado"
+  // llega como invitado a /payment/initialize y recibe 422.
+  jest.doMock(fromRoot('src', 'middleware', 'optionalAuth'), () => async function optionalAuthMiddleware(req, _res, next) {
+    req.user = isAdmin ? TEST_ADMIN : TEST_USER;
+    next();
+  });
   jest.doMock(fromRoot('src', 'middleware', 'adminOnly'), () => function adminOnlyMiddleware(req, res, next) {
     if (!(req.user && req.user.role && req.user.role.name === 'admin')) {
       return res.status(403).json({ message: 'Forbidden' });

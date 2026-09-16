@@ -10,10 +10,34 @@ function addTimestampAliases(obj) {
   return obj;
 }
 
+/**
+ * Precio efectivo de venta: `sale_price` válido (> 0) o, si no, `price`;
+ * `discount` sin valor pasa a 0 (las tarjetas ocultan la etiqueta "% Off").
+ * Sin descuento el admin guarda sale_price = price, pero los productos
+ * importados o sembrados traen null y la tienda pintaba "$0,00".
+ */
+function normalizePricing(item) {
+  if (!item || typeof item !== 'object') return item;
+  const sale = Number(item.sale_price);
+  const price = Number(item.price);
+  if (!(Number.isFinite(sale) && sale > 0) && Number.isFinite(price)) item.sale_price = price;
+  const discount = Number(item.discount);
+  if (item.discount === null || item.discount === undefined || item.discount === '' || !Number.isFinite(discount) || discount < 0) item.discount = 0;
+  return item;
+}
+
 function transformProduct(p) {
   if (!p) return p;
   const obj = p.toJSON ? p.toJSON() : p;
   addTimestampAliases(obj);
+  // Defensive cleanup: older API versions could persist null entries in these
+  // arrays (e.g. tags saved as [null] by a buggy admin build). A null here
+  // white-screens the admin edit form, so never let one out of the API.
+  if (Array.isArray(obj.tags)) {
+    obj.tags = obj.tags.filter((t) => t != null && t !== '');
+  }
+  if (Array.isArray(obj.categories)) obj.categories = obj.categories.filter(Boolean);
+  if (Array.isArray(obj.product_images)) obj.product_images = obj.product_images.filter(Boolean);
   obj.product_thumbnail = obj.product_thumbnail_id || null;
   obj.size_chart_image = obj.size_chart_image_id || null;
   const galleries = Array.isArray(obj.product_images) ? obj.product_images : [];
@@ -64,6 +88,10 @@ function transformProduct(p) {
       variation_image: Array.isArray(v.variation_images) && v.variation_images.length > 0 ? v.variation_images[0] : null,
     }));
   }
+  // Producto y variantes con precio de venta real (ver normalizePricing):
+  // tarjetas, ficha, carrito y resumen del checkout leen sale_price tal cual.
+  normalizePricing(obj);
+  if (Array.isArray(obj.variations)) obj.variations.forEach(normalizePricing);
   if (obj.brand_id) obj.brand = obj.brand_id;
   // Defaults for fields the UI expects
   if (obj.related_products === undefined) obj.related_products = [];
@@ -143,4 +171,4 @@ function transformTag(t) {
   return obj;
 }
 
-module.exports = { transformProduct, transformCategory, transformBrand, transformBlog, transformUser, transformReview, transformAttribute, transformTag };
+module.exports = { transformProduct, transformCategory, transformBrand, transformBlog, transformUser, transformReview, transformAttribute, transformTag, normalizePricing };

@@ -9,9 +9,18 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
+    "dev:qa": "nodemon --exec \"node -r dotenv/config server.js dotenv_config_path=.env.qa\"",
+    "start:qa": "node -r dotenv/config server.js dotenv_config_path=.env.qa",
+    "sync:qa": "node seed/sync-qa.js",
+    "seed:qa": "node -r dotenv/config seed/seed.js dotenv_config_path=.env.qa --force",
     "seed": "node seed/seed.js",
     "test": "jest --runInBand --detectOpenHandles --forceExit",
-    "reset": "node seed/reset.js"
+    "reset": "node seed/reset.js",
+    "seed:e2e": "node -r dotenv/config seed/seed.js dotenv_config_path=.env.e2e --force",
+    "start:e2e": "node -r dotenv/config server.js dotenv_config_path=.env.e2e",
+    "reset:e2e": "node -r dotenv/config seed/reset.js dotenv_config_path=.env.e2e",
+    "seed:pages": "node seed/seed-pages.js",
+    "seed:prod": "node seed/seed-prod.js"
   },
   "jest": {
     "testEnvironment": "node",
@@ -29,6 +38,7 @@
     "express": "^4.18.2",
     "express-async-errors": "^3.1.1",
     "express-rate-limit": "^7.5.1",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "mercadopago": "^2.12.0",
     "method-override": "^3.0.0",

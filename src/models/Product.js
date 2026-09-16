@@ -24,7 +24,20 @@ const productSchema = new mongoose.Schema({
   unit: String,
   weight: Number,
   quantity: { type: Number, default: 0 },
-  price: { type: Number, required: true },
+  // Variable ("classified") products price each variant individually, so the
+  // parent price is derived (see deriveParentPricingFromVariations) rather
+  // than entered — only simple products must carry their own price.
+  price: {
+    type: Number,
+    required: [
+      function () {
+        // Only a product with no priced variants must carry its own price.
+        const hasVariants = Array.isArray(this.variations) && this.variations.length > 0;
+        return this.type !== 'classified' && !hasVariants;
+      },
+      'Price is required',
+    ],
+  },
   sale_price: Number,
   discount: Number,
   sku: String,
@@ -54,9 +67,21 @@ const productSchema = new mongoose.Schema({
   brand_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Brand', default: null },
   categories: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Category' }],
   tags: [String],
+  // Productos relacionados / venta cruzada elegidos en el admin (Setup). Con
+  // `is_random_related_products` (valor por defecto) la tienda recibe hasta 6
+  // productos al azar de las mismas categorías (routes/product.routes.js) en
+  // lugar de la lista. Sin estos campos en el esquema Mongoose descartaba la
+  // selección al crear o editar el producto.
+  is_random_related_products: { type: Boolean, default: true },
+  related_products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+  cross_sell_products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
   tax_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Tax', default: null },
   attributes_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Attribute' }],
   product_thumbnail_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment', default: null },
+  // Imagen para redes / SEO (pestaña SEO del admin). Sin este campo el esquema
+  // la descartaba al guardar y GET /product/slug/:slug fallaba al poblarla
+  // (StrictPopulateError → 500 en la metadata de cada ficha).
+  product_meta_image_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment', default: null },
   size_chart_image_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment', default: null },
   product_images: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' }],
   variations: [variationSchema],
