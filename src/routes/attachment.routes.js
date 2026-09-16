@@ -6,6 +6,8 @@ const adminOnly = require('../middleware/adminOnly');
 const { multer, cloudinary, ensureCloudinaryConfigured } = require('../middleware/upload');
 const { getUsedAttachmentIds } = require('../utils/attachmentUsage');
 
+const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
 const isAttachmentUsed = ({ usedIds, usedUrls }, att) =>
   usedIds.has(String(att._id)) || (att.original_url && usedUrls.has(att.original_url));
 
@@ -28,7 +30,7 @@ router.post('/', auth, adminOnly, uploadLimiter, multer.any(), async (req, res) 
   }));
 
   res.status(201).json(created.length === 1 ? created[0] : { data: created });
-});
+}));
 
 // GET /attachment — paginated list with an `is_used` flag per item so the
 // Media page can badge attachments that are still wired to a product,
@@ -47,7 +49,7 @@ router.get('/', auth, adminOnly, async (req, res) => {
     return obj;
   });
   res.json({ current_page: page, last_page: Math.ceil(total / limit), total, per_page: limit, data });
-});
+}));
 
 // Cloudinary's destroy() does NOT accept resource_type 'auto' — it must be
 // 'image', 'video' or 'raw', so we derive it from the stored mime type.
@@ -105,7 +107,7 @@ router.delete('/deleteAll', auth, adminOnly, async (req, res) => {
     deleted: toDelete.map((a) => String(a._id)),
     skipped,
   });
-});
+}));
 
 // DELETE /attachment/:id  — single delete. Refuses (409) if in use unless
 // `?force=true`. The UI's default action should NOT pass force.
@@ -122,6 +124,6 @@ router.delete('/:id', auth, adminOnly, async (req, res) => {
   }
   await deleteAttachment(att);
   res.json({ message: 'Attachment deleted' });
-});
+}));
 
 module.exports = router;
