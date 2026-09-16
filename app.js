@@ -3,6 +3,17 @@ const cors = require('cors');
 const path = require('path');
 const methodOverride = require('method-override');
 
+// CAMBIO: redes de seguridad a nivel de proceso. No reemplazan el error
+// handler de Express de abajo, pero evitan que un error async que se
+// escape (fuera de un request, o en un stream sin listener) tumbe todo
+// el proceso de Node en silencio. Van al inicio, antes de levantar nada.
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
 const app = express();
 
 // Trust one proxy hop. Render (and any similar PaaS) puts a reverse proxy
@@ -95,8 +106,19 @@ app.use((req, res) => {
 });
 
 // Error handler
+// CAMBIO: ahora distingue errores de Multer (archivo muy grande, tipo no
+// permitido, etc.) y responde con el status HTTP correcto en vez de un
+// 500 genérico para todo.
 app.use((err, req, res, next) => {
   console.error(err);
+
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ message: 'El archivo excede el tamaño máximo permitido' });
+  }
+  if (err.name === 'MulterError') {
+    return res.status(400).json({ message: `Error de subida: ${err.message}` });
+  }
+
   res.status(err.status || 500).json({ message: err.message || 'Internal Server Error' });
 });
 
