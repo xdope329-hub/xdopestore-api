@@ -20,6 +20,7 @@ const flush = () => new Promise((r) => setTimeout(r, 30));
 
 function setup({ role = null, orderSlug = 'pending', guest = true } = {}) {
   jest.resetModules();
+    jest.doMock('../src/models/Page', () => ({ findOne: async () => null }));
   const mail = { sendOrderConfirmation: jest.fn(async () => ({})), sendOrderStatusUpdate: jest.fn(async () => ({})), logMailError: () => () => {} };
   jest.doMock('../src/services/mail', () => mail);
 
@@ -74,6 +75,7 @@ describe('POST /payment/initialize', () => {
   test('invitado (contra entrega): se envía la confirmación al correo del pedido', async () => {
     const { app, mail } = setup({ guest: true });
     const res = await request(app).post('/payment/initialize').send({
+      terms_accepted: true, terms_version: 'bundled-2026-08-27',
       name: 'Cliente Invitado', email: 'invitado@example.com', payment_method: 'cod',
       shipping_address: address, billing_address: address,
       products: [{ product_id: id(3), quantity: 1 }],

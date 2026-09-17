@@ -37,6 +37,7 @@ describe('POST /payment/initialize — variation snapshot', () => {
 
   beforeAll(() => {
     jest.resetModules();
+    jest.doMock('../src/models/Page', () => ({ findOne: async () => null }));
     jest.doMock('../src/models/Cart', () => Cart);
     jest.doMock('../src/models/Order', () => Order);
     jest.doMock('../src/models/OrderStatus', () => OrderStatus);
@@ -75,6 +76,7 @@ describe('POST /payment/initialize — variation snapshot', () => {
 
   const placeOrder = () =>
     request(app).post('/payment/initialize').send({
+      terms_accepted: true, terms_version: 'bundled-2026-08-27',
       payment_method: 'cod',
       billing_address_id: 'addr1',
       shipping_address_id: 'addr1',

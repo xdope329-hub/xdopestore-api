@@ -44,6 +44,7 @@ describe('coupons', () => {
 
   beforeAll(() => {
     jest.resetModules();
+    jest.doMock('../src/models/Page', () => ({ findOne: async () => null }));
     jest.doMock('../src/models/Coupon', () => Coupon);
     jest.doMock('../src/models/Order', () => Order);
     jest.doMock('../src/models/Cart', () => ({ find: () => ({ populate: async () => cartItems }), deleteMany: async () => {} }));
@@ -93,6 +94,7 @@ describe('coupons', () => {
 
   test('pago: recalcula descuento/envío en servidor, guarda el código e incrementa el uso', async () => {
     const res = await request(app).post('/payment/initialize').send({
+      terms_accepted: true, terms_version: 'bundled-2026-08-27',
       payment_method: 'cod',
       coupon_code: 'HOODIE10',
       coupon_total_discount: 999999, // el cliente miente — debe ignorarse
@@ -152,6 +154,7 @@ describe('coupons', () => {
   test('pago con cupón inválido → 422 y no crea orden', async () => {
     Order.create.mockClear();
     const res = await request(app).post('/payment/initialize').send({
+      terms_accepted: true, terms_version: 'bundled-2026-08-27',
       payment_method: 'cod', coupon_code: 'VENCIDO', shipping_address: { city: 'Bogotá', street: 'x' },
     });
     expect(res.status).toBe(422);

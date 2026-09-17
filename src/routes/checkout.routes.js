@@ -4,6 +4,13 @@ const Cart = require('../models/Cart');
 const Coupon = require('../models/Coupon');
 const auth = require('../middleware/auth');
 const optionalAuth = require('../middleware/optionalAuth');
+const { currentTerms } = require('../utils/termsAcceptance');
+
+// Version of the same published terms used by the storefront legal page.
+router.get('/terms', async (_req, res) => {
+  const { version, path, source } = await currentTerms();
+  res.set('Cache-Control', 'no-store').json({ version, path, source });
+});
 
 // POST /checkout  — returns totals summary (does not create order)
 router.post('/', checkoutLimiter, optionalAuth, async (req, res) => {
