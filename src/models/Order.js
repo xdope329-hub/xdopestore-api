@@ -48,6 +48,18 @@ const orderSchema = new mongoose.Schema({
   is_guest: { type: Boolean, default: false },
   guest_name: { type: String, default: null },
   guest_email: { type: String, default: null },
+  // Null for historical orders; new checkouts require explicit acceptance.
+  terms_acceptance: {
+    type: new mongoose.Schema({
+      accepted: Boolean,
+      accepted_at: Date,
+      version: String,
+      path: String,
+      source: { type: String, enum: ['cms', 'bundled'] },
+      content: { type: String, select: false },
+    }, { _id: false }),
+    default: null,
+  },
   products: [orderProductSchema],
   billing_address: addressSubSchema,
   shipping_address: addressSubSchema,

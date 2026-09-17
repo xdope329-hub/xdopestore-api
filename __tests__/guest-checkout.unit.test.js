@@ -32,6 +32,7 @@ describe('guest checkout', () => {
 
   beforeAll(() => {
     jest.resetModules();
+    jest.doMock('../src/models/Page', () => ({ findOne: async () => null }));
     jest.doMock('../src/models/Product', () => ({ find: async () => [hoodie] }));
     jest.doMock('../src/models/Coupon', () => ({
       findOne: async ({ code }) => (code === 'HOODIE10' ? { code: 'HOODIE10', status: 1, type: 'percentage', amount: 10, is_unlimited: true, used: 0 } : null),
@@ -84,6 +85,7 @@ describe('guest checkout', () => {
 
   test('pedido sin nombre/correo → 422', async () => {
     const res = await request(app).post('/payment/initialize').send({
+      terms_accepted: true, terms_version: 'bundled-2026-08-27',
       payment_method: 'cod',
       products: [{ product_id: 'p1', quantity: 1 }],
       shipping_address: { city: 'Bogotá', street: 'x' },
@@ -93,6 +95,7 @@ describe('guest checkout', () => {
 
   test('pedido de invitado: totales del servidor + campos de invitado', async () => {
     const res = await request(app).post('/payment/initialize').send({
+      terms_accepted: true, terms_version: 'bundled-2026-08-27',
       payment_method: 'cod', name: 'Oscar', email: 'oscar@test.com', coupon_code: 'HOODIE10',
       products: [{ product_id: 'p1', variation_id: 'v1', quantity: 1, price: 1 }],
       shipping_address: { city: 'Leticia', street: 'Calle 1' },

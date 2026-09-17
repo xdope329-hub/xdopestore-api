@@ -156,7 +156,7 @@ router.post('/', auth, async (req, res) => {
   try {
     built = await buildOrderFromCart(req.user._id, req.body);
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ message: err.message });
+    if (err.status) return res.status(err.status).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
     throw err;
   }
   if (!built) return res.status(422).json({ message: 'Cart is empty' });
@@ -181,6 +181,7 @@ router.post('/', auth, async (req, res) => {
     notes: built.notes,
     delivery_description: built.delivery_description,
     delivery_interval: built.delivery_interval,
+    terms_acceptance: built.terms_acceptance,
   });
 
   await Cart.deleteMany({ consumer_id: req.user._id });

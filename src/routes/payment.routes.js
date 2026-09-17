@@ -14,6 +14,7 @@ const { isPaymentConfirmed } = require('../utils/orderStatusFlow');
 const { stockProblems, stockMessage, reserveStock } = require('../utils/stock');
 const { capacityProblem } = require('../utils/capacity');
 const { unitPrice } = require('../utils/cartPricing');
+const { requireTermsAcceptance } = require('../utils/termsAcceptance');
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -109,6 +110,7 @@ async function countCouponUse(code) {
 }
 
 async function buildOrderFromCart(userId, body) {
+  const terms_acceptance = await requireTermsAcceptance(body);
   const { billing_address, billing_address_id, shipping_address, shipping_address_id, payment_method, notes } = body;
   const couponCode = body.coupon_code || body.coupon || '';
   // Persist inline checkout addresses so the user sees them pre-selected next time.
@@ -181,7 +183,7 @@ async function buildOrderFromCart(userId, body) {
     payment_method, coupon_total_discount, coupon_code, shipping_total, notes,
     delivery_description: body.delivery_description || null,
     delivery_interval: body.delivery_interval || null,
-    cartItems,
+    cartItems, terms_acceptance,
   };
 }
 
@@ -202,7 +204,7 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
   try {
     built = await buildOrderFromCart(req.user ? req.user._id : null, req.body);
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ message: err.message });
+    if (err.status) return res.status(err.status).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
     throw err;
   }
   if (!built) return res.status(422).json({ message: 'El carrito está vacío' });
@@ -249,6 +251,7 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
     delivery_description,
     delivery_interval,
     payment_initiated_at: new Date(),
+    terms_acceptance: built.terms_acceptance,
   });
 
   // Uso del cupón solo con el pago confirmado (contra entrega); con pasarela

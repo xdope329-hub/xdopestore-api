@@ -24,6 +24,7 @@ const flush = () => new Promise((r) => setTimeout(r, 40));
 
 function setupCheckout({ stock = 2, quantity = 1, capacity = null } = {}) {
   jest.resetModules();
+    jest.doMock('../src/models/Page', () => ({ findOne: async () => null }));
   // Capacidad diaria (utils/capacity.js): null = hay cupo; un objeto = rechazo 422.
   jest.doMock('../src/utils/capacity', () => ({ capacityProblem: jest.fn(async () => capacity) }));
   const productDoc = { _id: id(3), name: 'Camisa', price: 100, sale_price: 100, status: 1, quantity: stock, stock_status: 'in_stock', variations: [] };
@@ -73,7 +74,7 @@ function setupCheckout({ stock = 2, quantity = 1, capacity = null } = {}) {
   return { app, mail, Order, Product, productDoc, state };
 }
 
-const body = (payment_method) => ({ payment_method, shipping_address_id: 'addr1', billing_address_id: 'addr1', delivery_description: 'Envío estándar | 3–5 días hábiles' });
+const body = (payment_method) => ({ terms_accepted: true, terms_version: 'bundled-2026-08-27', payment_method, shipping_address_id: 'addr1', billing_address_id: 'addr1', delivery_description: 'Envío estándar | 3–5 días hábiles' });
 
 describe('POST /payment/initialize', () => {
   test('más unidades que el stock → 422 y no se crea el pedido', async () => {
@@ -139,6 +140,7 @@ describe('POST /payment/initialize', () => {
 
 function setupStatusChange({ payment_method, payment_status, reserved, currentSlug = 'processing' }) {
   jest.resetModules();
+    jest.doMock('../src/models/Page', () => ({ findOne: async () => null }));
   const productDoc = { _id: id(3), quantity: 0, stock_status: 'out_of_stock', variations: [] };
   const state = { status_id: STATUSES.find((s) => s.slug === currentSlug)._id, reserved };
   const orderDoc = () => ({ _id: id(100), order_number: 3000, payment_method, payment_status, stock_reserved: state.reserved, status_id: state.status_id, consumer_id: { _id: id(7), name: 'Ana', email: 'ana@example.com' }, products: [{ product_id: id(3), quantity: 1 }], toJSON() { return { ...this, toJSON: undefined }; } });
