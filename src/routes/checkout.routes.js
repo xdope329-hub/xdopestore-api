@@ -33,7 +33,12 @@ router.post('/', checkoutLimiter, optionalAuth, async (req, res) => {
     cartItems = await Cart.find({ consumer_id: req.user._id }).populate('product_id');
   } else {
     const { buildGuestCartItems } = require('../utils/guestCart');
-    cartItems = await buildGuestCartItems(req.body.products);
+    try {
+      cartItems = await buildGuestCartItems(req.body.products);
+    } catch (err) {
+      if (err.status) return res.status(err.status).json({ message: err.message });
+      throw err;
+    }
   }
   cartItems = cartItems.filter((i) => i.product_id && typeof i.product_id === 'object');
   if (!cartItems.length) return res.status(422).json({ message: 'Cart is empty' });

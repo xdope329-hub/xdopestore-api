@@ -3,6 +3,7 @@ const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const auth = require('../middleware/auth');
 const { findVariation, unitPrice, shapeCartVariation, validateCartLine, CART_PRODUCT_POPULATE } = require('../utils/cartPricing');
+const { validateBundleSelections, bundleCompositionFilter } = require('../utils/bundleSelections');
 
 // Same shape as GET /cart (see cart.routes.js): variant with its photo.
 async function getCartItems(userId) {
@@ -32,19 +33,30 @@ router.post('/sync/cart', auth, async (req, res) => {
   for (const item of payload) {
     const product = await Product.findById(item.product_id);
     if (!product) continue;
-    const check = validateCartLine(product, item.variation_id, item.quantity);
+    const isBundle = product.type === 'bundle';
+    const variationId = isBundle ? null : (item.variation_id || null);
+    const check = validateCartLine(isBundle ? { ...product, variations: [] } : product, variationId, item.quantity);
     if (!check.ok) {
       skipped.push({ product_id: String(item.product_id), name: product.name, message: check.message });
       continue;
     }
+    let bundleSelections;
+    if (isBundle) {
+      const bundle = await validateBundleSelections(product, item.bundle_selections);
+      if (!bundle.ok) {
+        skipped.push({ product_id: String(item.product_id), name: product.name, message: bundle.message });
+        continue;
+      }
+      bundleSelections = bundle.selections;
+    }
     const price = unitPrice(product, check.variation);
-    const existing = await Cart.findOne({ consumer_id: req.user._id, product_id: item.product_id, variation_id: item.variation_id || null });
+    const existing = await Cart.findOne({ consumer_id: req.user._id, product_id: item.product_id, variation_id: variationId, ...(isBundle ? bundleCompositionFilter(bundleSelections) : {}) });
     if (existing) {
       existing.quantity = Math.max(existing.quantity, check.qty);
       existing.sub_total = existing.quantity * price;
       await existing.save();
     } else {
-      await Cart.create({ consumer_id: req.user._id, product_id: item.product_id, variation_id: item.variation_id || null, quantity: check.qty, sub_total: check.qty * price });
+      await Cart.create({ consumer_id: req.user._id, product_id: item.product_id, variation_id: variationId, ...(isBundle ? { bundle_selections: bundleSelections } : {}), quantity: check.qty, sub_total: check.qty * price });
     }
   }
   const items = await getCartItems(req.user._id);

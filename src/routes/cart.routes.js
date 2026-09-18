@@ -4,6 +4,7 @@ const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const auth = require('../middleware/auth');
 const { findVariation, unitPrice, shapeCartVariation, CART_PRODUCT_POPULATE } = require('../utils/cartPricing');
+const { validateBundleSelections, bundleCompositionFilter } = require('../utils/bundleSelections');
 
 // A cart line for a variable product stores only variation_id — resolve the
 // full variant subdoc so the storefront can show its name/talla, price and
@@ -53,42 +54,6 @@ router.get('/', auth, async (req, res) => {
   res.json(await getCartResponse(req.user._id));
 });
 
-// Bundle: valida que las selecciones cubran todos los items del bundle y que
-// cada variante pertenezca al subset permitido en el admin. Devuelve las
-// selecciones saneadas ({ ok, selections } | { ok: false, message }).
-async function validateBundleSelections(product, rawSelections) {
-  const items = Array.isArray(product.bundle_items) ? product.bundle_items : [];
-  if (!items.length) return { ok: false, message: 'Bundle sin items configurados' };
-  const byPid = new Map();
-  (rawSelections || []).forEach((sel) => {
-    const pid = String(sel?.product_id ?? '');
-    if (pid) byPid.set(pid, sel);
-  });
-  const out = [];
-  for (const it of items) {
-    const pid = String(it.product_id);
-    const sel = byPid.get(pid);
-    if (!sel) return { ok: false, message: 'Elige las variantes de cada producto del bundle' };
-    const child = await Product.findById(pid);
-    if (!child) return { ok: false, message: 'Producto del bundle no disponible' };
-    const hasVariants = Array.isArray(child.variations) && child.variations.length > 0;
-    let variationId = sel.variation_id ? String(sel.variation_id) : null;
-    if (hasVariants) {
-      if (!variationId) return { ok: false, message: 'Elige las variantes de cada producto del bundle' };
-      const variation = child.variations.find((v) => String(v._id) === variationId);
-      if (!variation) return { ok: false, message: 'Variante inválida en el bundle' };
-      const allowed = Array.isArray(it.allowed_variation_ids) ? it.allowed_variation_ids.map(String) : [];
-      if (allowed.length && !allowed.includes(variationId)) {
-        return { ok: false, message: 'Variante no permitida para este bundle' };
-      }
-    } else {
-      variationId = null;
-    }
-    out.push({ product_id: pid, variation_id: variationId });
-  }
-  return { ok: true, selections: out };
-}
-
 // POST /cart — add item or update quantity (with _method:put)
 router.post('/', auth, async (req, res) => {
   const { product_id, variation_id, quantity = 1, bundle_selections } = req.body;
@@ -118,14 +83,7 @@ router.post('/', auth, async (req, res) => {
   }
   const price = unitPrice(product, chosenVariation);
   // Cada combinación de bundle_selections es un item distinto en el carrito.
-  const bundleKey = isBundle
-    ? bundleSelections.map((s) => `${s.product_id}:${s.variation_id || ''}`).sort().join('|')
-    : null;
-  let existing = await Cart.findOne({ consumer_id: req.user._id, product_id, variation_id: isBundle ? null : (variation_id || null) });
-  if (existing && isBundle) {
-    const existingKey = (existing.bundle_selections || []).map((s) => `${s.product_id}:${s.variation_id || ''}`).sort().join('|');
-    if (existingKey !== bundleKey) existing = null;
-  }
+  const existing = await Cart.findOne({ consumer_id: req.user._id, product_id, variation_id: isBundle ? null : (variation_id || null), ...(isBundle ? bundleCompositionFilter(bundleSelections) : {}) });
 
   if (existing) {
     existing.quantity += qty;
