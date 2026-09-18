@@ -41,4 +41,25 @@ function describeOrderLine(item, product) {
   return { ...fallback, variation_name: item?.variation_name || fallback.variation_name };
 }
 
-module.exports = { buildOrderLineSnapshot, describeOrderLine, findVariation };
+/**
+ * Congela la composición del bundle: para cada selección resuelve el producto
+ * hijo (populado) y su variante para snapshot de nombre/atributos.
+ * `cartItem.bundle_selections` puede traer product_id como ObjectId o poblado.
+ */
+function buildBundleSnapshot(cartItem) {
+  const list = Array.isArray(cartItem?.bundle_selections) ? cartItem.bundle_selections : [];
+  return list.map((sel) => {
+    const childDoc = sel.product_id && typeof sel.product_id === 'object' ? sel.product_id : null;
+    const variation = childDoc ? findVariation(childDoc, sel.variation_id) : null;
+    const attributes = attributesOf(variation);
+    return {
+      product_id: childDoc?._id || childDoc?.id || sel.product_id,
+      product_name: childDoc?.name || null,
+      variation_id: sel.variation_id || null,
+      variation_name: variation ? variation.name || attributes.map((a) => a.value).join('/') || null : null,
+      variation_attributes: attributes,
+    };
+  });
+}
+
+module.exports = { buildOrderLineSnapshot, buildBundleSnapshot, describeOrderLine, findVariation };
