@@ -31,6 +31,10 @@ function transformProduct(p) {
     sku: line.sku,
     variation_attributes: line.variation_attributes,
     product_thumbnail: productDoc?.product_thumbnail_id || null,
+    // Bundle: composición congelada al momento del pedido (producto hijo,
+    // variante elegida y sus atributos). Se llena solo si esta línea es un
+    // bundle; en simple/classified se devuelve vacío.
+    bundle_selections: Array.isArray(item.bundle_selections) ? item.bundle_selections : [],
     // Siempre 1/0: el producto lo guarda como booleano y el detalle del pedido
     // de la tienda compara con `=== 1` (con `true` el botón Reembolso nunca
     // se habilitaba).
