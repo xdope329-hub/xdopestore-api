@@ -1,5 +1,6 @@
 const Product = require('../models/Product');
 const { findVariation, unitPrice } = require('./cartPricing');
+const { validateBundleSelections } = require('./bundleSelections');
 
 /**
  * Reconstruye el carrito de un invitado EN EL SERVIDOR a partir de
@@ -17,6 +18,7 @@ async function buildGuestCartItems(rawProducts) {
       product_id: String(p.product_id || p.product?.id || p.product?._id || ''),
       variation_id: p.variation_id ? String(p.variation_id) : null,
       quantity: Math.max(1, Math.floor(Number(p.quantity) || 1)),
+      bundle_selections: p.bundle_selections,
     }))
     .filter((p) => p.product_id);
   if (!wanted.length) return [];
@@ -28,6 +30,12 @@ async function buildGuestCartItems(rawProducts) {
   for (const w of wanted) {
     const doc = byId.get(w.product_id);
     if (!doc) continue; // producto eliminado/inactivo — se omite
+    if (doc.type === 'bundle') {
+      const check = await validateBundleSelections(doc, w.bundle_selections, { populate: true });
+      if (!check.ok) throw Object.assign(new Error(check.message), { status: 422 });
+      items.push({ product_id: doc, variation_id: null, bundle_selections: check.selections, quantity: w.quantity, sub_total: Math.round(unitPrice(doc, null) * w.quantity) });
+      continue;
+    }
     const variation = w.variation_id ? findVariation(doc, w.variation_id) : null;
     if (w.variation_id && !variation) continue;
     // Mismo precio que el carrito de usuarios (utils/cartPricing.js): un
