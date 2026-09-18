@@ -14,12 +14,22 @@ const variationSchema = new mongoose.Schema({
   variation_images: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' }],
 }, { _id: true, toJSON: { virtuals: true } });
 
+// Bundle: cada línea referencia un producto existente. `allowed_variation_ids`
+// vacío = el cliente puede elegir cualquier variante activa; si tiene ids,
+// solo se pueden elegir esas variantes. Cantidad fija = 1 por línea.
+const bundleItemSchema = new mongoose.Schema({
+  product_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+  allowed_variation_ids: [{ type: mongoose.Schema.Types.ObjectId }],
+}, { _id: false });
+
 const productSchema = new mongoose.Schema({
   name: { type: String, required: true },
   slug: { type: String, unique: true },
   short_description: String,
   description: String,
+  // simple | classified (variantes) | bundle (grupo de productos con precio fijo)
   type: { type: String, default: 'simple' },
+  bundle_items: { type: [bundleItemSchema], default: [] },
   product_type: { type: String, default: 'physical' },
   unit: String,
   weight: Number,

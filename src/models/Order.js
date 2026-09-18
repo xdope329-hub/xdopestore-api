@@ -16,6 +16,19 @@ const orderProductSchema = new mongoose.Schema({
   quantity: Number,
   price: Number,
   sub_total: Number,
+  // Bundle: composición elegida al comprar (nombre del hijo, variante y
+  // atributos), congelada al momento del pedido para que el detalle no cambie
+  // aunque el bundle se edite después.
+  bundle_selections: {
+    type: [{
+      product_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+      product_name: String,
+      variation_id: { type: mongoose.Schema.Types.ObjectId, default: null },
+      variation_name: { type: String, default: null },
+      variation_attributes: { type: [{ name: String, value: String }], default: [] },
+    }],
+    default: [],
+  },
   // Estado de la solicitud de reembolso de esta línea (models/Refund.js):
   // null | pending | approved | rejected. Lo muestra el detalle del pedido.
   refund_status: { type: String, default: null },

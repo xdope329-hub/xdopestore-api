@@ -94,6 +94,16 @@ function transformProduct(p) {
   if (Array.isArray(obj.variations)) obj.variations.forEach(normalizePricing);
   if (obj.brand_id) obj.brand = obj.brand_id;
   // Defaults for fields the UI expects
+  // Bundle: transformar cada producto hijo para que el storefront reciba
+  // `attributes`, `product_thumbnail` y `variations` con los alias esperados.
+  if (Array.isArray(obj.bundle_items)) {
+    obj.bundle_items = obj.bundle_items
+      .filter((it) => it && it.product_id)
+      .map((it) => ({
+        product_id: it.product_id && typeof it.product_id === 'object' ? transformProduct(it.product_id) : it.product_id,
+        allowed_variation_ids: Array.isArray(it.allowed_variation_ids) ? it.allowed_variation_ids.map(String) : [],
+      }));
+  }
   if (obj.related_products === undefined) obj.related_products = [];
   if (obj.cross_sell_products === undefined) obj.cross_sell_products = [];
   if (obj.reviews_count === undefined) obj.reviews_count = 0;

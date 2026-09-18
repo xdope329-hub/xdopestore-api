@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const { checkoutLimiter } = require('../middleware/rateLimiters');
 const Order = require('../models/Order');
-const { buildOrderLineSnapshot, describeOrderLine } = require('../utils/orderLineSnapshot');
+const { buildOrderLineSnapshot, buildBundleSnapshot, describeOrderLine } = require('../utils/orderLineSnapshot');
 const { applyPaymentResult } = require('../services/orderTransitions');
 const Cart = require('../models/Cart');
 const OrderStatus = require('../models/OrderStatus');
@@ -121,7 +121,7 @@ async function buildOrderFromCart(userId, body) {
   // enviados, con precios SIEMPRE tomados de la base de datos.
   let cartItems;
   if (userId) {
-    cartItems = await Cart.find({ consumer_id: userId }).populate('product_id');
+    cartItems = await Cart.find({ consumer_id: userId }).populate([{ path: 'product_id' }, { path: 'bundle_selections.product_id', select: 'name variations' }]);
   } else {
     const { buildGuestCartItems } = require('../utils/guestCart');
     cartItems = await buildGuestCartItems(body.products);
@@ -138,6 +138,7 @@ async function buildOrderFromCart(userId, body) {
       variation_id: i.variation_id || null,
       // variation_name + variation_attributes (Color, Talla…) + sku
       ...buildOrderLineSnapshot(i.product_id, variation),
+      bundle_selections: buildBundleSnapshot(i),
       name: i.product_id.name,
       quantity: i.quantity,
       // Precio ACTUAL de la variante o del producto (utils/cartPricing.js) y

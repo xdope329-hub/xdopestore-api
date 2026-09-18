@@ -250,6 +250,31 @@ function resolveProductSort(query = {}) {
  * tenía estos campos y Mongoose descartaba la selección al guardar.
  */
 const RELATED_PRODUCT_KEYS = ['related_products', 'cross_sell_products'];
+
+/**
+ * Bundle items: solo ids válidos, sin duplicados, sin el propio producto.
+ * `allowed_variation_ids` vacío = el cliente elige cualquier variante activa.
+ */
+function sanitizeBundleItems(body, selfId) {
+  if (body.bundle_items === undefined) return body;
+  const raw = Array.isArray(body.bundle_items) ? body.bundle_items : [];
+  const seen = new Set();
+  const items = [];
+  for (const entry of raw) {
+    const pid = String(refId(entry?.product_id) ?? '');
+    if (!isObjectIdString(pid) || pid === String(selfId || '') || seen.has(pid)) continue;
+    seen.add(pid);
+    const varIds = Array.isArray(entry?.allowed_variation_ids) ? entry.allowed_variation_ids : [];
+    const allowed = [];
+    for (const v of varIds) {
+      const id = String(refId(v) ?? '');
+      if (isObjectIdString(id) && !allowed.includes(id)) allowed.push(id);
+    }
+    items.push({ product_id: pid, allowed_variation_ids: allowed });
+  }
+  body.bundle_items = items;
+  return body;
+}
 const refId = (v) => (v && typeof v === 'object' ? v._id || v.id : v);
 const isObjectIdString = (v) => typeof v === 'string' && v.length === 24 && mongoose.Types.ObjectId.isValid(v);
 function sanitizeRelatedProducts(body, selfId) {
@@ -404,7 +429,15 @@ router.get('/slug/:slug', optionalAuth, async (req, res) => {
     .populate('product_meta_image_id')
     .populate('tax_id')
     .populate('attributes_ids')
-    .populate('variations.variation_images', 'asset_url original_url');
+    .populate('variations.variation_images', 'asset_url original_url')
+    .populate({
+      path: 'bundle_items.product_id',
+      populate: [
+        { path: 'product_thumbnail_id', select: 'asset_url original_url' },
+        { path: 'variations.variation_images', select: 'asset_url original_url' },
+        { path: 'attributes_ids' },
+      ],
+    });
   if (!product) return res.status(404).json({ message: 'Product not found' });
   const userId = req.user?._id;
   const enriched = await attachReviews(product, userId);
@@ -504,7 +537,15 @@ router.get('/:id', optionalAuth, async (req, res) => {
     .populate('product_images')
     .populate('tax_id')
     .populate('attributes_ids')
-    .populate('variations.variation_images');
+    .populate('variations.variation_images')
+    .populate({
+      path: 'bundle_items.product_id',
+      populate: [
+        { path: 'product_thumbnail_id', select: 'asset_url original_url' },
+        { path: 'variations.variation_images', select: 'asset_url original_url' },
+        { path: 'attributes_ids' },
+      ],
+    });
   if (!product) return res.status(404).json({ message: 'Product not found' });
 
   const userId = req.user?._id;
@@ -572,6 +613,7 @@ function normalizeProductBody(body, { selfId } = {}) {
 
   deriveParentPricingFromVariations(body);
   sanitizeRelatedProducts(body, selfId);
+  sanitizeBundleItems(body, selfId);
   return body;
 }
 
