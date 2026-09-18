@@ -8,15 +8,18 @@ async function validateBundleSelections(product, rawSelections, { populate = fal
   const items = Array.isArray(product.bundle_items) ? product.bundle_items : [];
   if (!items.length) return { ok: false, message: 'Bundle sin items configurados' };
   if (!Array.isArray(rawSelections)) return { ok: false, message: 'Elige las variantes de cada producto del bundle' };
-  const byPid = new Map(rawSelections.map((selection) => [idOf(selection?.product_id), selection]));
-  if (byPid.size !== rawSelections.length || byPid.size !== items.length) {
+  // Matching posicional: un bundle puede repetir el mismo producto en varios
+  // slots (con distintas allowed_variation_ids), así que no se puede indexar
+  // por product_id — cada slot consume la selección de su misma posición.
+  if (rawSelections.length !== items.length) {
     return { ok: false, message: 'Elige las variantes de cada producto del bundle' };
   }
   const selections = [];
-  for (const item of items) {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
     const pid = idOf(item.product_id);
-    const selected = byPid.get(pid);
-    if (!selected) return { ok: false, message: 'Elige las variantes de cada producto del bundle' };
+    const selected = rawSelections[i];
+    if (!selected || idOf(selected.product_id) !== pid) return { ok: false, message: 'Elige las variantes de cada producto del bundle' };
     const child = await Product.findById(pid);
     if (!child || [false, 0, '0'].includes(child.status)) return { ok: false, message: 'Producto del bundle no disponible' };
     const variations = Array.isArray(child.variations) ? child.variations : [];
@@ -35,13 +38,22 @@ async function validateBundleSelections(product, rawSelections, { populate = fal
   return { ok: true, selections };
 }
 
-// Match the entire composition, regardless of the order in which it was sent.
-// Different sizes for the same bundle must remain distinct cart lines.
+// Match the entire composition positionally. `$all` es set-based, así que un
+// bundle con el mismo producto repetido varias veces necesita comparación por
+// posición para no colisionar con otras composiciones de igual tamaño.
 function bundleCompositionFilter(selections) {
-  return { bundle_selections: {
-    $size: selections.length,
-    $all: selections.map((selection) => ({ $elemMatch: { product_id: idOf(selection.product_id), variation_id: selection.variation_id || null } })),
-  } };
+  const ordered = selections.map((selection) => ({
+    product_id: idOf(selection.product_id),
+    variation_id: selection.variation_id || null,
+  }));
+  return {
+    $expr: {
+      $eq: [
+        { $map: { input: '$bundle_selections', as: 'sel', in: { product_id: { $toString: '$$sel.product_id' }, variation_id: { $cond: [{ $ifNull: ['$$sel.variation_id', false] }, { $toString: '$$sel.variation_id' }, null] } } } },
+        ordered,
+      ],
+    },
+  };
 }
 
 module.exports = { validateBundleSelections, bundleCompositionFilter };

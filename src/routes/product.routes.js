@@ -252,18 +252,18 @@ function resolveProductSort(query = {}) {
 const RELATED_PRODUCT_KEYS = ['related_products', 'cross_sell_products'];
 
 /**
- * Bundle items: solo ids válidos, sin duplicados, sin el propio producto.
+ * Bundle items: solo ids válidos, sin el propio producto. Se permiten
+ * duplicados del mismo product_id (el mismo producto puede aparecer varias
+ * veces en el bundle, típicamente con distintas variantes permitidas).
  * `allowed_variation_ids` vacío = el cliente elige cualquier variante activa.
  */
 function sanitizeBundleItems(body, selfId) {
   if (body.bundle_items === undefined) return body;
   const raw = Array.isArray(body.bundle_items) ? body.bundle_items : [];
-  const seen = new Set();
   const items = [];
   for (const entry of raw) {
     const pid = String(refId(entry?.product_id) ?? '');
-    if (!isObjectIdString(pid) || pid === String(selfId || '') || seen.has(pid)) continue;
-    seen.add(pid);
+    if (!isObjectIdString(pid) || pid === String(selfId || '')) continue;
     const varIds = Array.isArray(entry?.allowed_variation_ids) ? entry.allowed_variation_ids : [];
     const allowed = [];
     for (const v of varIds) {
