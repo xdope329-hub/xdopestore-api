@@ -15,6 +15,29 @@ const { stockProblems, stockMessage, reserveStock } = require('../utils/stock');
 const { capacityProblem } = require('../utils/capacity');
 const { unitPrice } = require('../utils/cartPricing');
 const { requireTermsAcceptance } = require('../utils/termsAcceptance');
+const { maybeSendPurchase } = require('../services/meta');
+
+// Extrae fbp/fbc/fbclid/user_agent/event_source_url que el frontend envia
+// dentro del payload de /payment/initialize para poder atribuir el Purchase
+// CAPI aunque este viaje luego desde el webhook (fuera del navegador).
+function extractMetaAttribution(req) {
+  const meta = (req.body && req.body.meta) || {};
+  const clientIp = req.ip || null; // trust proxy = 1 (app.js) → IP real del cliente
+  const userAgent = meta.user_agent || req.get('user-agent') || null;
+  const fbclid = meta.fbclid ? String(meta.fbclid) : null;
+  // Meta espera fbc con formato "fb.1.<timestamp>.<fbclid>". Si el frontend ya
+  // lo mando (leyendo la cookie _fbc), respetamos ese valor; si solo llego el
+  // fbclid, sintetizamos uno para no perder la atribucion.
+  const fbcFromClient = meta.fbc ? String(meta.fbc) : null;
+  const fbc = fbcFromClient || (fbclid ? `fb.1.${Date.now()}.${fbclid}` : null);
+  return {
+    meta_fbp: meta.fbp ? String(meta.fbp) : null,
+    meta_fbc: fbc,
+    meta_client_ip: clientIp,
+    meta_client_user_agent: userAgent,
+    meta_event_source_url: meta.event_source_url ? String(meta.event_source_url) : null,
+  };
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -232,6 +255,7 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
   const billing_address = built.billing_address || shipping_address;
   if (!payment_method) return res.status(422).json({ message: 'Elige un método de pago para realizar tu pedido' });
 
+  const metaAttribution = extractMetaAttribution(req);
   const order = await Order.create({
     consumer_id: req.user ? req.user._id : null,
     is_guest: isGuest,
@@ -253,6 +277,7 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
     delivery_interval,
     payment_initiated_at: new Date(),
     terms_acceptance: built.terms_acceptance,
+    ...metaAttribution,
   });
 
   // Uso del cupón solo con el pago confirmado (contra entrega); con pasarela
@@ -289,6 +314,8 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
         consumer: req.user ? { name: req.user.name, email: req.user.email } : null,
       })
       .catch(mail.logMailError('order-confirmation'));
+    // COD: pedido confirmado al crearse → Purchase CAPI (idempotente).
+    maybeSendPurchase(order._id).catch((err) => console.error('[meta] purchase failed', err?.message || err));
   }
 
   res.status(201).json({ order_id: String(order._id), ...gatewayResult });
@@ -300,6 +327,9 @@ router.post('/initialize', checkoutLimiter, optionalAuth, async (req, res) => {
 async function onPaymentConfirmed(orderId) {
   const mail = require('../services/mail');
   reserveStock(orderId).catch((err) => console.error('[stock] reserve failed', err?.message || err));
+  // Purchase CAPI (idempotente): un webhook repetido o el race webhook/verify
+  // ya no envia dos Purchase gracias al guard de meta_purchase_sent_at.
+  maybeSendPurchase(orderId).catch((err) => console.error('[meta] purchase failed', err?.message || err));
   try {
     const order = await Order.findById(orderId).populate([{ path: 'consumer_id', select: 'name email' }, { path: 'status_id' }]);
     if (!order) return;
@@ -361,7 +391,7 @@ router.get('/verify/:orderId', optionalAuth, async (req, res) => {
   // `order_number`: la página de éxito lo muestra al cliente (antes no viajaba
   // y el número quedaba en blanco).
   if (order.payment_status !== 'pending') {
-    return res.json({ order_id: String(order._id), order_number: order.order_number, payment_status: order.payment_status, order_status: order.status_id });
+    return res.json({ order_id: String(order._id), order_number: order.order_number, payment_status: order.payment_status, order_status: order.status_id, ...buildTrackingSnapshot(order) });
   }
 
   // Si aún está pending, consultamos a la pasarela. Misma regla que el
@@ -385,8 +415,27 @@ router.get('/verify/:orderId', optionalAuth, async (req, res) => {
     console.error('[payment/verify] error:', err.message);
   }
 
-  res.json({ order_id: String(order._id), order_number: order.order_number, payment_status: gatewayStatus, order_status: orderStatus });
+  res.json({ order_id: String(order._id), order_number: order.order_number, payment_status: gatewayStatus, order_status: orderStatus, ...buildTrackingSnapshot(order) });
 });
+
+// Snapshot ligero del pedido para que la pagina de exito pueda disparar
+// Purchase en el navegador con los MISMOS numeros que el backend envio via
+// CAPI. Compartir event_id (purchase_<orderId>) permite la deduplicacion en
+// Meta. No incluye datos personales ni direcciones.
+function buildTrackingSnapshot(order) {
+  const { buildContents, purchaseEventId, CURRENCY } = require('../services/meta');
+  const contents = buildContents(order);
+  return {
+    tracking: {
+      event_id: purchaseEventId(order._id),
+      currency: CURRENCY,
+      value: Number(order.total) || 0,
+      contents,
+      content_ids: contents.map((c) => c.id),
+      num_items: contents.reduce((s, c) => s + c.quantity, 0),
+    },
+  };
+}
 
 // Compartido con el POST /order heredado (order.routes.js): un solo
 // constructor de pedidos con precios, cupón y envío calculados en el servidor.
