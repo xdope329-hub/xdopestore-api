@@ -110,6 +110,18 @@ const orderSchema = new mongoose.Schema({
   // pago; contra entrega al crearse). Al cancelar se repone y vuelve a false
   // (utils/stock.js).
   stock_reserved: { type: Boolean, default: false },
+  // Meta Pixel / Conversions API: dedup + atribucion.
+  // meta_purchase_sent_at: guard atomico de idempotencia — un webhook repetido
+  // o el race webhook/verify no reenvia Purchase (services/meta/purchase.js).
+  meta_purchase_sent_at: { type: Date, default: null },
+  // fbp/fbc/ip/ua/url capturados en /payment/initialize desde el navegador del
+  // comprador, para que el Purchase CAPI (que se envia despues, desde el
+  // webhook) conserve la atribucion original de la sesion de anuncios.
+  meta_fbp: { type: String, default: null },
+  meta_fbc: { type: String, default: null },
+  meta_client_ip: { type: String, default: null },
+  meta_client_user_agent: { type: String, default: null },
+  meta_event_source_url: { type: String, default: null },
 }, { timestamps: true, toJSON: { virtuals: true } });
 
 // Auto-increment order_number
